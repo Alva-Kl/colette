@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""
+COLETTE — Context Organizer for Local Environments and Task Tracking Engine
+
+Orchestrates working on different branches through different running instances
+of code, to supervise several GenAI agents on different tasks in parallel.
+
+Usage: colette <subcommand> [options]
+       colette --help
+
+This is the entrypoint that delegates to the modular CLI implementation.
+"""
+
+import sys
+from colette_cli.main import main
+
+if __name__ == "__main__":
+    main()
