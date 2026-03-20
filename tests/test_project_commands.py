@@ -183,3 +183,42 @@ class TestCmdDelete:
             cmd_delete(args)
         assert project_dir.exists()
         assert len(load_projects()) == 1
+
+
+class TestCmdCreate:
+    def test_oncreate_hook_runs_on_create(self, tmp_config, tmp_path):
+        """The oncreate hook actually executes when cmd_create is called."""
+        from colette_cli.utils.config import save_config, load_projects, write_template_hook, save_templates
+        from colette_cli.project.commands import cmd_create
+        marker = tmp_path / "marker.txt"
+        write_template_hook("tmpl", "oncreate", f"#!/usr/bin/env bash\necho oncreate > {marker}")
+        template_dir = tmp_path / "tmpl-source"
+        template_dir.mkdir()
+        cfg = {
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": str(tmp_path / "projects"),
+                    "templates": [{"name": "tmpl", "type": "directory", "path": str(template_dir)}],
+                }
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        save_templates({"templates": [{"name": "tmpl", "params": {}}]})
+        args = MagicMock()
+        args.name = "my-project"
+        args.machine = "local"
+        args.template = "tmpl"
+        project_dir = tmp_path / "projects" / "my-project"
+
+        def fake_copytree(src, dst):
+            Path(dst).mkdir(parents=True, exist_ok=True)
+
+        with patch("colette_cli.project.commands.shutil.copytree", side_effect=fake_copytree):
+            cmd_create(args)
+
+        assert marker.exists(), "oncreate hook did not run"
+        assert marker.read_text().strip() == "oncreate"
+        projects = load_projects()
+        assert any(p["name"] == "my-project" for p in projects)

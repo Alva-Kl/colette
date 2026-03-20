@@ -119,6 +119,18 @@ class TestRunTemplateHook:
         with pytest.raises(SystemExit):
             run_template_hook(project, {}, "local", False, metadata, "oncreate", fail_on_error=True)
 
+    def test_echo_hook_writes_marker_file(self, tmp_config, tmp_path):
+        """An echo hook actually executes: its output reaches the filesystem."""
+        from colette_cli.utils.config import write_template_hook
+        from colette_cli.template.executor import run_template_hook
+        marker = tmp_path / "marker.txt"
+        write_template_hook("t", "onstart", f"#!/usr/bin/env bash\necho ran > {marker}")
+        project = {"name": "proj", "path": str(tmp_path), "machine": "local", "template": "t"}
+        metadata = {"name": "t"}
+        result = run_template_hook(project, {}, "local", False, metadata, "onstart")
+        assert result is True
+        assert marker.read_text().strip() == "ran"
+
 
 class TestBuildHookCommand:
     def test_returns_none_when_no_hook(self, tmp_config):
