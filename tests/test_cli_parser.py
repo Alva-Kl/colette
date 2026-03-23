@@ -145,3 +145,14 @@ class TestConfigSubcommands:
     def test_config_set_default(self, parser):
         args = parser.parse_args(["config", "set-default", "local"])
         assert args.machine_name == "local"
+
+    def test_config_no_subcommand_has_config_parser_attribute(self, parser):
+        args = parser.parse_args(["config"])
+        assert args.config_cmd is None
+        assert hasattr(args, "config_parser")
+        assert args.config_parser is not None
+
+    def test_config_subcommand_also_carries_config_parser(self, parser):
+        args = parser.parse_args(["config", "list"])
+        assert hasattr(args, "config_parser")
+        assert args.config_parser is not None

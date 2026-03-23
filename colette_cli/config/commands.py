@@ -410,10 +410,4 @@ def cmd_config(args):
     elif args.config_cmd == "set-default":
         cmd_config_set_default(args)
     else:
-        cfg = load_config()
-        print(f"Default machine: {cfg.get('default_machine') or '(none)'}")
-        machines = list(cfg.get("machines", {}).keys())
-        print(f"Machines:        {', '.join(machines) if machines else '(none)'}")
-        print(
-            "\nRun 'colette config list' for details or 'colette config --help' for options."
-        )
+        args.config_parser.print_help()

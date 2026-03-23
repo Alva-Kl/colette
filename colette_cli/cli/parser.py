@@ -17,27 +17,10 @@ def build_parser():
     """Build the argument parser for the CLI."""
     parser = argparse.ArgumentParser(
         prog="colette",
-        description=(
-            BANNER
-            + "\nSubcommands:\n"
-            + "  config   Manage machines and templates\n"
-            + "  create   Create a project from a template\n"
-            + "  link     Link an existing directory as a project\n"
-            + "  unlink   Remove a project from colette (files kept)\n"
-            + "  delete   Delete a project\n"
-            + "  list     List projects\n"
-            + "  attach   Attach to project session\n"
-            + "  code     Open project in VS Code\n"
-            + "  start    Start project sessions\n"
-            + "  stop     Stop project sessions\n"
-            + "  monitor  Watch multiple sessions in tmux panes\n"
-            + "  logs     Run onlogs hook for one or all projects\n\n"
-            + "Run 'colette <subcommand> --help' for details."
-        ),
+        description=BANNER,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  colette config --help\n"
             "  colette config add-machine\n"
             "  colette create my-project -m local -t my-template\n"
             "  colette start -m local my-project\n"
@@ -48,26 +31,11 @@ def build_parser():
 
     cp = sub.add_parser(
         "config",
-        help="Manage machine and template configuration",
-        description=(
-            "Configuration actions for machines, defaults, and templates.\n\n"
-            "Actions:\n"
-            "  list               List all configured machines\n"
-            "  list-templates     List templates for a machine\n"
-            "  add-machine        Interactively add a machine\n"
-            "  edit-machine       Edit a machine\n"
-            "  add-template       Add a template to a machine\n"
-            "  edit-template      Edit a template on a machine\n"
-            "  edit-hook          Edit a template hook script with nano\n"
-            "  edit-project-hook  Edit a project-specific hook script with nano\n"
-            "  remove-template    Remove a template from a machine\n"
-            "  remove-machine     Remove a machine\n"
-            "  set-default        Set the default machine\n\n"
-            "Run 'colette config <action> --help' for action-specific usage."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        help="Manage machines, templates, and hook scripts",
+        description="Manage machines, templates, and hook scripts.",
     )
     csub = cp.add_subparsers(dest="config_cmd", metavar="<action>")
+    cp.set_defaults(config_parser=cp)
     csub.add_parser("list", help="List all configured machines")
     ltp = csub.add_parser("list-templates", help="List templates for a machine")
     ltp.add_argument(

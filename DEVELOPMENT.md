@@ -130,20 +130,33 @@ All state lives under `~/.config/colette/`.
 
 ## Hook system architecture
 
-1. **Resolution order**: `_resolve_hook` in `template/executor.py` first checks the
+1. **Resolution order**: `_resolve_hook_with_super` in `template/executor.py` first checks the
    project-specific hook (`projects/<project>/.<hook>`), then falls back to the
    template hook (`templates/<template>/.<hook>`). A hook is only "effective" if
    it contains at least one non-comment, non-shebang line (`_has_effective_script`).
 
-2. **Execution**: `run_template_hook` runs the resolved script via `bash -lc` either
-   locally (`subprocess.run`) or remotely (`ssh_run`).
+2. **SUPER inheritance**: When a project-level hook is active, `$SUPER` is set to
+   the corresponding template hook file path. The project hook can call
+   `source "$SUPER"` to also run the template hook (inheritance pattern). `$SUPER`
+   is never set for template-level hooks to prevent self-sourcing.
 
-3. **Interactive hooks** (`onlogs`, `attach`): use `build_hook_command` to assemble a
-   full shell command string with env assignments, then pass to `local_tmux_session`
-   or `ssh_interactive`.
+3. **coletterc**: `_prepend_coletterc` prepends the resolved coletterc content
+   before every hook command — `run_template_hook` and `build_hook_command` both
+   call it. When a project-level coletterc is active, `SUPER` is set before the
+   coletterc content so it can inherit from the template coletterc.
 
-4. **Bootstrap** (`coletterc`): `build_project_bootstrap` reads the template's
-   `.coletterc` and prepends it to `exec bash` for `tmux new-session`.
+4. **Execution**: `run_template_hook` runs the resolved+prepended script via
+   `bash -lc` either locally (`subprocess.run`) or remotely (`ssh_run`).
+
+5. **Interactive hooks** (`onlogs`, `attach`): `build_hook_command` assembles a
+   full shell command string with coletterc prepended and env assignments, then
+   passes it to `local_tmux_session` or `ssh_interactive`.
+
+6. **Bootstrap** (`coletterc` for terminal sessions): `build_project_bootstrap`
+   generates `exec bash --rcfile <(echo BASE64 | base64 -d)` where the decoded
+   rcfile sources `~/.bashrc` first, then coletterc. This ensures venv activations
+   in coletterc are applied *after* `.bashrc` and therefore persist in the
+   interactive terminal.
 
 ---
 
@@ -183,6 +196,7 @@ Follow **every** step. Missing any one step is a bug.
 | Warnings | Use `warn(message)` — prints to stderr, does **not** exit |
 | Success output | Use `info(message)` — prints `✓ message` to stdout |
 | No duplication | Shared logic belongs in `utils/helpers.py` (project grouping/filtering) or `utils/config.py` (I/O). Never copy logic across command modules. |
+| KISS / DRY | Prefer the simplest solution. Extract any logic used in two or more places into a helper. Avoid clever code that obscures intent. |
 | Thin command functions | Command handlers should orchestrate helpers; keep business logic out of `main.py`. |
 | Imports | Import functions from `colette_cli.utils.*`; avoid relative imports across packages. |
 | Naming | `cmd_<name>` for top-level commands, `cmd_config_<sub>` for config sub-commands |

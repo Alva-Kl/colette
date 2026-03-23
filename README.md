@@ -383,7 +383,16 @@ They are automatically invoked by Colette at lifecycle events.
 | `onstart` | `.onstart` | After `colette start` | Non-interactive |
 | `onstop` | `.onstop` | Before `colette stop` | Non-interactive |
 | `onlogs` | `.onlogs` | `colette logs` | Interactive (tmux) |
-| `coletterc` | `.coletterc` | Session bootstrap | Sourced (not executed) |
+| `coletterc` | `.coletterc` | Before every hook and on session bootstrap | Sourced (not executed) |
+
+`coletterc` is the base common hook. It is sourced automatically before every
+other hook script runs, and it is also applied when opening a terminal with
+`colette attach` or `colette start`. This makes it the right place to activate
+a virtualenv, set environment variables, or perform any per-project setup.
+
+> **Venv note**: `coletterc` is applied *after* `~/.bashrc` when bootstrapping
+> an interactive terminal, so venv activations defined in `coletterc` are never
+> overwritten by the shell's rc file.
 
 ### Hook environment variables
 
@@ -401,7 +410,21 @@ Every hook receives these environment variables:
 
 Place a hook file in `~/.config/colette/projects/<project-name>/` to override
 the template hook for that specific project. The project hook takes full
-precedence; the template hook is not run.
+precedence; the template hook is not run unless explicitly invoked.
+
+To call the template hook from a project hook, use the `$SUPER` variable:
+
+```bash
+#!/usr/bin/env bash
+# Run the template hook first (inheritance)
+source "$SUPER"
+# Then add project-specific steps
+export MY_EXTRA_VAR=1
+```
+
+`$SUPER` is set by Colette to the path of the corresponding template hook file
+whenever a project-level override is active. It is not set for template-level
+hooks (to avoid self-sourcing).
 
 ```
 ~/.config/colette/

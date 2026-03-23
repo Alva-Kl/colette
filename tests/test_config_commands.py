@@ -163,3 +163,35 @@ class TestCmdConfigRemoveTemplate:
         save_config(LOCAL_CFG)
         with pytest.raises(SystemExit):
             cmd_config_remove_template(MagicMock(machine_name="local", template_name="nope"))
+
+
+class TestCmdConfigDispatch:
+    """cmd_config routing and no-subcommand behaviour."""
+
+    def test_no_subcommand_calls_print_help(self, tmp_config):
+        from colette_cli.config.commands import cmd_config
+        mock_parser = MagicMock()
+        args = MagicMock()
+        args.config_cmd = None
+        args.config_parser = mock_parser
+        cmd_config(args)
+        mock_parser.print_help.assert_called_once()
+
+    def test_list_subcommand_dispatches(self, tmp_config):
+        from colette_cli.config.commands import cmd_config
+        args = MagicMock()
+        args.config_cmd = "list"
+        with patch("colette_cli.config.commands.cmd_config_list") as mock_list:
+            cmd_config(args)
+            mock_list.assert_called_once_with(args)
+
+    def test_set_default_subcommand_dispatches(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.config.commands import cmd_config
+        save_config(LOCAL_CFG)
+        args = MagicMock()
+        args.config_cmd = "set-default"
+        args.machine_name = "local"
+        cmd_config(args)
+        from colette_cli.utils.config import load_config
+        assert load_config()["default_machine"] == "local"
