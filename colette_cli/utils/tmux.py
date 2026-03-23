@@ -108,30 +108,26 @@ def _create_tmux_window_with_panes(
         )
 
     if inside_tmux:
-        # Create a new window in the current session
-        subprocess.run(
-            ["tmux", "new-window", "-n", session_name, first_cmd],
-            capture_output=True,
+        # Create a new window and capture its unique window ID for precise targeting
+        r = subprocess.run(
+            ["tmux", "new-window", "-P", "-F", "#{window_id}", "-n", session_name, first_cmd],
+            capture_output=True, text=True,
         )
-        target = session_name
+        target = r.stdout.strip()  # e.g. "@5" — unique across all sessions
     else:
-        # Create a detached session; we'll attach at the end
-        subprocess.run(
+        # Create a detached session and capture the window ID
+        r = subprocess.run(
             [
-                "tmux",
-                "new-session",
-                "-d",
-                "-s",
-                session_name,
-                "-n",
-                session_name,
-                first_cmd,
+                "tmux", "new-session", "-d", "-P", "-F", "#{window_id}",
+                "-s", session_name, "-n", session_name, first_cmd,
             ],
-            capture_output=True,
+            capture_output=True, text=True,
         )
-        target = f"{session_name}:{session_name}"
+        target = r.stdout.strip()
 
-    # Split panes for remaining projects
+    # Split panes for remaining projects.
+    # Apply tiled layout after EACH split so that no pane ever becomes too
+    # small to split (tmux refuses splits below the minimum pane size).
     for _project, cmd in active_commands[1:]:
         subprocess.run(
             ["tmux", "split-window", "-t", target, cmd],
@@ -141,11 +137,6 @@ def _create_tmux_window_with_panes(
             ["tmux", "select-layout", "-t", target, "tiled"],
             capture_output=True,
         )
-
-    subprocess.run(
-        ["tmux", "select-layout", "-t", target, "tiled"],
-        capture_output=True,
-    )
 
     if inside_tmux:
         info(f"Window '{session_name}' opened with {len(active_commands)} pane(s).")

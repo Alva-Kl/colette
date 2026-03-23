@@ -179,9 +179,9 @@ def cmd_monitor(args):
                         f"bash -lc {shlex.quote(build_project_bootstrap(project, machine_name, template_metadata))}",
                     )
                     info(f"Started new session for '{project['name']}'")
-                key_flag = f"-i {machine['ssh_key']} " if "ssh_key" in machine else ""
+                key_flag = f"-i {shlex.quote(machine['ssh_key'])} " if "ssh_key" in machine else ""
                 host = machine.get("host", "")
-                command = f"ssh -t {key_flag}{host} tmux attach-session -t {project['name']} -r"
+                command = f"ssh -t {key_flag}{host} tmux attach-session -t {shlex.quote(project['name'])}"
                 active.append((project, monitor_attach_wrapper(command)))
         else:
             local_sessions = get_sessions(machine, is_remote)
@@ -213,7 +213,7 @@ def cmd_monitor(args):
                     (
                         project,
                         monitor_attach_wrapper(
-                            f"tmux attach-session -t {project['name']} -r"
+                            f"tmux attach-session -t {shlex.quote(project['name'])}"
                         ),
                     )
                 )

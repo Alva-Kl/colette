@@ -11,17 +11,30 @@ from colette_cli.utils.config import (
 
 SCRIPT_KEYS = ("oncreate", "onstart", "onstop", "onlogs", "coletterc")
 
+_HOOK_VAR_DOCS = """\
+# Available Colette environment variables:
+# $COLETTE_PROJECT_NAME  — name of the project
+# $COLETTE_PROJECT_PATH  — absolute path to the project directory
+# $COLETTE_MACHINE_NAME  — name of the configured machine
+# $COLETTE_TEMPLATE_NAME — name of the template used by the project
+# $COLETTE_PARAM_<KEY>   — custom template parameters (defined in template config)
+# $SUPER                 — path to parent hook (set when a project hook overrides a template hook)
+#                          call `source "$SUPER"` to inherit the template hook behaviour
+"""
+
 
 def _default_hook_content(template_name, hook_name):
     if hook_name == "coletterc":
         return (
-            f"# Colette sources this file when it creates a tmux session for\n"
+            _HOOK_VAR_DOCS
+            + f"# Colette sources this file when it creates a tmux session for\n"
             f"# projects using the '{template_name}' template.\n"
         )
     return (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n\n"
-        f"# Colette runs this hook for the '{template_name}' template during {hook_name}.\n"
+        + _HOOK_VAR_DOCS
+        + f"# Colette runs this hook for the '{template_name}' template during {hook_name}.\n"
     )
 
 

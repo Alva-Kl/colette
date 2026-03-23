@@ -5,8 +5,8 @@ import argparse
 BANNER = r"""
    ██████╗ ██████╗ ██╗     ███████╗████████╗████████╗███████╗
   ██╔════╝██╔═══██╗██║     ██╔════╝╚══██╔══╝╚══██╔══╝██╔════╝
-  ██║     ██║   ██║██║     █████╗     ██║      ██║   █████╗
-  ██║     ██║   ██║██║     ██╔══╝     ██║      ██║   ██╔══╝
+  ██║     ██║   ██║██║     █████╗     ██║      ██║   █████╗  
+  ██║     ██║   ██║██║     ██╔══╝     ██║      ██║   ██╔══╝  
   ╚██████╗╚██████╔╝███████╗███████╗   ██║      ██║   ███████╗
    ╚═════╝ ╚═════╝ ╚══════╝╚══════╝   ╚═╝      ╚═╝   ╚══════╝
   Context Organizer for Local Environments and Task Tracking Engine
@@ -189,5 +189,7 @@ def build_parser():
         metavar="MACHINE",
         help="Only show logs from one machine",
     )
+
+    sub.add_parser("tui", help="Interactive TUI (arrow-key navigation)")
 
     return parser

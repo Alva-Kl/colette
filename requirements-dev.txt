@@ -1,0 +1,2 @@
+# Development dependencies for Colette
+pytest>=7.0

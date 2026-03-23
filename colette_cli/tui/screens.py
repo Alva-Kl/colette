@@ -1,0 +1,508 @@
+"""Screen builders for the Colette TUI.
+
+Each public function returns a list[MenuItem] for a particular screen.
+Actions that need to leave curses (open nano, launch tmux) are wrapped so
+curses is suspended/resumed around them.
+"""
+
+import shlex
+import subprocess
+from pathlib import Path
+
+from argparse import Namespace
+
+from colette_cli.template import SCRIPT_KEYS
+from colette_cli.utils.config import (
+    get_template_hook_path,
+    get_project_hook_path,
+    load_config,
+    load_projects,
+    load_templates,
+    scaffold_project_hook_files,
+)
+from colette_cli.template import (
+    get_project_template_name,
+    get_template_metadata,
+    list_machine_template_names,
+    normalize_machine_templates,
+)
+from colette_cli.utils.tmux import local_tmux_session
+from colette_cli.template import build_project_bootstrap
+
+from .menu import MenuItem
+
+
+def _suspend(fn):
+    """Return a wrapper that suspends curses, runs fn, then resumes."""
+    import curses
+
+    def wrapper(*args, **kwargs):
+        curses.endwin()
+        try:
+            fn(*args, **kwargs)
+        finally:
+            curses.doupdate()
+
+    return wrapper
+
+
+def _open_nano(path):
+    subprocess.run(["nano", str(path)])
+
+
+# ---------------------------------------------------------------------------
+# Main menu
+# ---------------------------------------------------------------------------
+
+def main_menu_items():
+    def _run_monitor():
+        from colette_cli.session import cmd_monitor
+        cmd_monitor(Namespace(machine=None, projects=[]))
+
+    return [
+        MenuItem("Projects", children=project_list_items),
+        MenuItem("Templates", children=template_list_items),
+        MenuItem("Config", children=config_menu_items),
+        MenuItem("Monitor", action=_suspend(_run_monitor)),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Project screens
+# ---------------------------------------------------------------------------
+
+def _create_project_interactive():
+    """Prompt for project details and call cmd_create."""
+    from colette_cli.project import cmd_create
+    cfg = load_config()
+    machines = list(cfg.get("machines", {}).keys())
+    default_machine = cfg.get("default_machine") or (machines[0] if machines else "")
+
+    name = input("\nProject name: ").strip()
+    if not name:
+        print("Aborted.")
+        input("\nPress Enter to continue…")
+        return
+
+    machine = input(f"Machine [{default_machine}]: ").strip() or default_machine
+    template = input("Template (leave empty for none): ").strip() or None
+
+    cmd_create(Namespace(name=name, machine=machine, template=template))
+    input("\nPress Enter to continue…")
+
+
+def _link_directory_interactive():
+    """Prompt for path/name/machine and call cmd_link."""
+    from colette_cli.project import cmd_link
+    cfg = load_config()
+    default_machine = cfg.get("default_machine", "")
+
+    path = input("\nDirectory path: ").strip()
+    if not path:
+        print("Aborted.")
+        input("\nPress Enter to continue…")
+        return
+
+    machine = input(f"Machine [{default_machine}]: ").strip() or default_machine
+    name = input("Project name (leave empty to use directory name): ").strip() or None
+
+    cmd_link(Namespace(path=path, machine=machine, name=name))
+    input("\nPress Enter to continue…")
+
+
+def project_list_items():
+    from colette_cli.session import cmd_start, cmd_stop
+
+    def _start_all():
+        cmd_start(Namespace(machine=None, projects=[]))
+        input("\nPress Enter to continue…")
+
+    def _stop_all():
+        cmd_stop(Namespace(machine=None, projects=[]))
+        input("\nPress Enter to continue…")
+
+    items = [
+        MenuItem("Create project", action=_suspend(_create_project_interactive)),
+        MenuItem("Link directory", action=_suspend(_link_directory_interactive)),
+        MenuItem("Start all", action=_suspend(_start_all)),
+        MenuItem("Stop all", action=_suspend(_stop_all)),
+    ]
+
+    projects = load_projects()
+    if not projects:
+        items.append(MenuItem("(no projects)", action=lambda: None))
+        return items
+
+    cfg = load_config()
+    default = cfg.get("default_machine", "")
+
+    by_machine = {}
+    for p in projects:
+        by_machine.setdefault(p["machine"], []).append(p)
+
+    def _machine_label(name):
+        return f"[{name}]" + (" (default)" if name == default else "")
+
+    for machine_name in sorted(by_machine, key=lambda m: (m != default, m)):
+        items.append(MenuItem(
+            _machine_label(machine_name),
+            action=lambda: None,
+            detail="",
+        ))
+        for project in sorted(by_machine[machine_name], key=lambda p: p["name"]):
+            tmpl = project.get("template") or "—"
+            items.append(MenuItem(
+                project["name"],
+                detail=tmpl,
+                children=lambda p=project: project_action_items(p),
+            ))
+    return items
+
+
+def project_action_items(project):
+    from colette_cli.session import cmd_start, cmd_stop
+    from colette_cli.project import cmd_delete, cmd_unlink
+
+    name = project["name"]
+    cfg = load_config()
+    machine = cfg.get("machines", {}).get(project["machine"], {})
+    is_remote = machine.get("type") == "ssh"
+
+    def _open_session():
+        if is_remote:
+            from colette_cli.utils.ssh import ssh_interactive
+            template_name = get_project_template_name(project)
+            template_metadata = get_template_metadata(load_templates(), template_name)
+            startup_command = build_project_bootstrap(
+                project, project["machine"], template_metadata
+            )
+            tmux_cmd = (
+                f"tmux new-session -A -s {shlex.quote(name)} "
+                f"-c {shlex.quote(project['path'])} "
+                f"bash -lc {shlex.quote(startup_command)}"
+            )
+            ssh_interactive(machine, tmux_cmd)
+        else:
+            template_name = get_project_template_name(project)
+            template_metadata = get_template_metadata(load_templates(), template_name)
+            startup_command = build_project_bootstrap(
+                project, project["machine"], template_metadata
+            )
+            project_path = str(Path(project["path"]).expanduser())
+            local_tmux_session(name, project_path, startup_command)
+
+    def _start():
+        cmd_start(Namespace(machine=None, projects=[name]))
+        input("\nPress Enter to continue…")
+
+    def _stop():
+        cmd_stop(Namespace(machine=None, projects=[name]))
+        input("\nPress Enter to continue…")
+
+    def _open_code():
+        if is_remote:
+            host = machine.get("host", "")
+            uri = f"vscode-remote://ssh-remote+{host}{project['path']}"
+            subprocess.run(["code", "--folder-uri", uri])
+        else:
+            subprocess.run(["code", str(Path(project["path"]).expanduser())])
+
+    def _open_logs():
+        from colette_cli.session import cmd_logs
+        cmd_logs(Namespace(name=name, machine=None))
+
+    def _delete():
+        cmd_delete(Namespace(name=name))
+        input("\nPress Enter to continue…")
+
+    def _unlink():
+        cmd_unlink(Namespace(name=name))
+        input("\nPress Enter to continue…")
+
+    return [
+        MenuItem("Open session", action=_suspend(_open_session)),
+        MenuItem("Start", action=_suspend(_start)),
+        MenuItem("Stop", action=_suspend(_stop)),
+        MenuItem("Code", action=_suspend(_open_code)),
+        MenuItem("Logs", action=_suspend(_open_logs)),
+        MenuItem("Edit hooks", children=lambda: project_hook_items(project)),
+        MenuItem("Delete", action=_suspend(_delete)),
+        MenuItem("Unlink", action=_suspend(_unlink)),
+    ]
+
+
+def project_hook_items(project):
+    scaffold_project_hook_files(project["name"])
+    items = []
+    for hook_name in SCRIPT_KEYS:
+        hook_path = get_project_hook_path(project["name"], hook_name)
+        items.append(MenuItem(
+            hook_name,
+            detail=str(hook_path),
+            action=_suspend(lambda p=hook_path: _open_nano(p)),
+        ))
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Template screens
+# ---------------------------------------------------------------------------
+
+def template_list_items():
+    cfg = load_config()
+    templates_cfg = load_templates()
+    seen = set()
+    items = []
+
+    for machine_name, machine in sorted(cfg.get("machines", {}).items()):
+        for tmpl_name in list_machine_template_names(machine):
+            if tmpl_name in seen:
+                continue
+            seen.add(tmpl_name)
+            metadata = get_template_metadata(templates_cfg, tmpl_name)
+            desc = (metadata or {}).get("description", "")
+            items.append(MenuItem(
+                tmpl_name,
+                detail=desc,
+                children=lambda t=tmpl_name: template_action_items(t),
+            ))
+
+    if not items:
+        return [MenuItem("(no templates)", action=lambda: None)]
+    return items
+
+
+def template_action_items(template_name):
+    def _create_project():
+        import sys
+        name = input(f"\nNew project name for template '{template_name}': ").strip()
+        if not name:
+            print("Aborted.")
+            return
+        # Delegate to cmd_create logic
+        from argparse import Namespace
+        from colette_cli.project.commands import cmd_create
+        cfg = load_config()
+        args = Namespace(
+            name=name,
+            machine=cfg.get("default_machine"),
+            template=template_name,
+        )
+        cmd_create(args)
+        input("\nPress Enter to continue…")
+
+    return [
+        MenuItem("Create project", action=_suspend(_create_project)),
+        MenuItem("Edit hooks", children=lambda: template_hook_items(template_name)),
+        MenuItem("Edit parameters", children=lambda: template_param_items(template_name)),
+    ]
+
+
+
+def template_hook_items(template_name):
+    from colette_cli.template.registry import scaffold_template_hook_files
+    scaffold_template_hook_files(template_name)
+    items = []
+    for hook_name in SCRIPT_KEYS:
+        hook_path = get_template_hook_path(template_name, hook_name)
+        items.append(MenuItem(
+            hook_name,
+            detail=str(hook_path),
+            action=_suspend(lambda p=hook_path: _open_nano(p)),
+        ))
+    return items
+
+
+def template_param_items(template_name):
+    """Screen for viewing and editing a template's custom parameters."""
+    from colette_cli.template import upsert_template_metadata
+    from colette_cli.utils.config import save_templates
+
+    def _reload_metadata():
+        return (get_template_metadata(load_templates(), template_name) or {}).get("params") or {}
+
+    def _save_params(params):
+        templates_cfg = load_templates()
+        upsert_template_metadata(templates_cfg, template_name, params=params)
+        save_templates(templates_cfg)
+
+    def _add_param():
+        key = input("\nParameter name (e.g. PORT): ").strip().upper()
+        if not key:
+            print("Aborted.")
+            input("\nPress Enter to continue…")
+            return
+        value = input(f"Value for {key}: ").strip()
+        params = _reload_metadata()
+        params[key] = value
+        _save_params(params)
+        print(f"Parameter {key} set.")
+        input("\nPress Enter to continue…")
+
+    items = [MenuItem("Add parameter", action=_suspend(_add_param))]
+
+    params = _reload_metadata()
+    for key, value in sorted(params.items()):
+        def _edit(k=key):
+            new_val = input(f"\nNew value for {k} [{params[k]}]: ").strip()
+            if not new_val:
+                print("Aborted.")
+                input("\nPress Enter to continue…")
+                return
+            p = _reload_metadata()
+            p[k] = new_val
+            _save_params(p)
+            print(f"Parameter {k} updated.")
+            input("\nPress Enter to continue…")
+
+        def _remove(k=key):
+            ans = input(f"\nRemove parameter {k}? [y/N]: ").strip().lower()
+            if ans != "y":
+                print("Aborted.")
+            else:
+                p = _reload_metadata()
+                p.pop(k, None)
+                _save_params(p)
+                print(f"Parameter {k} removed.")
+            input("\nPress Enter to continue…")
+
+        items.append(MenuItem(
+            key,
+            detail=str(value),
+            children=lambda k=key, e=_edit, r=_remove: [
+                MenuItem("Edit value", action=_suspend(e)),
+                MenuItem("Remove", action=_suspend(r)),
+            ],
+        ))
+
+    if not params:
+        items.append(MenuItem("(no parameters)", action=lambda: None))
+
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Config screens
+# ---------------------------------------------------------------------------
+
+def config_menu_items():
+    return [
+        MenuItem("Machines", children=machine_list_items),
+        MenuItem("Projects", children=config_project_list_items),
+    ]
+
+
+def machine_list_items():
+    from colette_cli.config import (
+        cmd_config_add_machine,
+        cmd_config_edit_machine,
+        cmd_config_remove_machine,
+        cmd_config_set_default,
+    )
+
+    cfg = load_config()
+    machines = cfg.get("machines", {})
+    default = cfg.get("default_machine", "")
+
+    items = [MenuItem("Add machine", action=_suspend(lambda: cmd_config_add_machine(Namespace())))]
+
+    for machine_name in sorted(machines, key=lambda m: (m != default, m)):
+        detail = "default" if machine_name == default else machines[machine_name].get("type", "local")
+        items.append(MenuItem(
+            machine_name,
+            detail=detail,
+            children=lambda mn=machine_name: machine_action_items(mn),
+        ))
+
+    if not machines:
+        items.append(MenuItem("(no machines configured)", action=lambda: None))
+
+    return items
+
+
+def machine_action_items(machine_name):
+    from colette_cli.config import (
+        cmd_config_edit_machine,
+        cmd_config_remove_machine,
+        cmd_config_set_default,
+    )
+
+    def _edit():
+        cmd_config_edit_machine(Namespace(machine_name=machine_name))
+        input("\nPress Enter to continue…")
+
+    def _set_default():
+        cmd_config_set_default(Namespace(machine_name=machine_name))
+        input("\nPress Enter to continue…")
+
+    def _remove():
+        cmd_config_remove_machine(Namespace(machine_name=machine_name))
+        input("\nPress Enter to continue…")
+
+    return [
+        MenuItem("Edit", action=_suspend(_edit)),
+        MenuItem("Set as default", action=_suspend(_set_default)),
+        MenuItem("Templates", children=lambda: machine_template_items(machine_name)),
+        MenuItem("Remove", action=_suspend(_remove)),
+    ]
+
+
+def machine_template_items(machine_name):
+    from colette_cli.config import (
+        cmd_config_add_template,
+        cmd_config_edit_template,
+        cmd_config_remove_template,
+    )
+
+    cfg = load_config()
+    machine = cfg.get("machines", {}).get(machine_name, {})
+    template_names = list_machine_template_names(machine)
+
+    def _add():
+        name = input(f"\nTemplate name to add to '{machine_name}': ").strip()
+        if not name:
+            print("Aborted.")
+            input("\nPress Enter to continue…")
+            return
+        cmd_config_add_template(Namespace(machine_name=machine_name, template_name=name, params=[]))
+        input("\nPress Enter to continue…")
+
+    items = [MenuItem("Add template", action=_suspend(_add))]
+
+    for tmpl_name in template_names:
+        def _edit(tn=tmpl_name):
+            cmd_config_edit_template(Namespace(machine_name=machine_name, template_name=tn, params=None))
+            input("\nPress Enter to continue…")
+
+        def _remove(tn=tmpl_name):
+            cmd_config_remove_template(Namespace(machine_name=machine_name, template_name=tn))
+            input("\nPress Enter to continue…")
+
+        items.append(MenuItem(
+            tmpl_name,
+            children=lambda tn=tmpl_name, e=_edit, r=_remove: [
+                MenuItem("Edit", action=_suspend(e)),
+                MenuItem("Edit hooks", children=lambda: template_hook_items(tn)),
+                MenuItem("Remove", action=_suspend(r)),
+            ],
+        ))
+
+    if not template_names:
+        items.append(MenuItem("(no templates)", action=lambda: None))
+
+    return items
+
+
+def config_project_list_items():
+    projects = load_projects()
+    if not projects:
+        return [MenuItem("(no projects)", action=lambda: None)]
+
+    items = []
+    for project in sorted(projects, key=lambda p: p["name"]):
+        items.append(MenuItem(
+            project["name"],
+            detail=project.get("template") or "—",
+            children=lambda p=project: project_hook_items(p),
+        ))
+    return items

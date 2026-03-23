@@ -322,6 +322,31 @@ colette attach my-project
 
 ---
 
+### `colette tui` — interactive TUI
+
+```
+colette tui
+```
+
+Launch a full-screen interactive terminal UI. Navigate with arrow keys:
+
+| Key | Action |
+|---|---|
+| ↑ / ↓ | Move selection |
+| → / Enter | Go deeper / select |
+| ← / Escape | Go back |
+| `q` | Quit |
+
+**Screens:**
+- **Projects** — lists all projects grouped by machine. Selecting a project offers: *Open session*, *Code*, *Edit config* (hook scripts).
+- **Templates** — lists all configured templates. Selecting a template offers: *Create project*, *Edit config* (hook scripts).
+
+```bash
+colette tui
+```
+
+---
+
 ### `colette monitor` — watch multiple sessions
 
 ```

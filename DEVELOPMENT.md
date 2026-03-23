@@ -22,11 +22,15 @@ colette_cli/
     commands.py            start / stop / monitor / logs
     __init__.py            Re-exports for the session package
   template/
-    executor.py            Hook execution (_resolve_hook, run_template_hook, build_hook_command, build_project_bootstrap)
+    executor.py            Hook execution (_resolve_hook_with_super, run_template_hook, build_hook_command, build_project_bootstrap)
     registry.py            Scaffold / metadata helpers (scaffold_template_hook_files, upsert/remove metadata)
     __init__.py            Re-exports for the template package
+  tui/
+    app.py                 cmd_tui entry point — curses wrapper and screen-stack loop
+    menu.py                Menu widget — renders items, handles arrow-key navigation
+    screens.py             Screen builders — main menu, project/template lists and actions
+    __init__.py            Re-exports cmd_tui
   utils/
-    config.py              JSON I/O, path constants, hook r/w (template + project)
     helpers.py             build_projects_by_machine, filter_projects_by_name
     formatting.py          ANSI colours, err() / warn() / info()
     validation.py          validate_project_name / validate_machine_name
@@ -257,12 +261,20 @@ with pytest.raises(SystemExit):
 
 ### Running tests
 
+Install dev dependencies first:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+Then run:
+
 ```bash
 python -m pytest tests/ -v
 ```
 
-There is no `setup.py` or `pyproject.toml` test runner config; pytest discovers
-tests automatically.
+`pyproject.toml` defines project metadata and the `colette` entry-point script.
+`requirements-dev.txt` lists development-only dependencies (pytest).
 
 ---
 
