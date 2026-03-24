@@ -161,16 +161,6 @@ def project_list_items():
                     children=lambda p=project: project_action_items(p),
                 ))
 
-    # ── Separator ────────────────────────────────────────────────────────────
-    items.append(MenuItem("─" * 30, selectable=False))
-
-    # ── Global actions ───────────────────────────────────────────────────────
-    items.append(MenuItem("Start All", action=_suspend_with_pause(_start_all)))
-    items.append(MenuItem("Stop All", action=_suspend_with_pause(_stop_all)))
-
-    # ── Per-machine start/stop (only when multiple machines or any exist) ────
-    if projects:
-        for machine_name in sorted(by_machine, key=lambda m: (m != default, m)):
             def _start_machine(mn=machine_name):
                 cmd_start(Namespace(machine=mn, projects=[]))
 
@@ -179,6 +169,13 @@ def project_list_items():
 
             items.append(MenuItem(f"Start All — {machine_name}", action=_suspend_with_pause(_start_machine)))
             items.append(MenuItem(f"Stop All — {machine_name}", action=_suspend_with_pause(_stop_machine)))
+
+    # ── Separator ────────────────────────────────────────────────────────────
+    items.append(MenuItem("─" * 30, selectable=False))
+
+    # ── Global actions ───────────────────────────────────────────────────────
+    items.append(MenuItem("Start All", action=_suspend_with_pause(_start_all)))
+    items.append(MenuItem("Stop All", action=_suspend_with_pause(_stop_all)))
 
     # ── Project management ───────────────────────────────────────────────────
     items.append(MenuItem("Create project", action=_suspend(_create_project_interactive)))
