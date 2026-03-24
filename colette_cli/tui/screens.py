@@ -46,6 +46,21 @@ def _suspend(fn):
     return wrapper
 
 
+def _suspend_with_pause(fn):
+    """Like _suspend but also prompts 'Press Enter to continue…' after fn returns."""
+    import curses
+
+    def wrapper(*args, **kwargs):
+        curses.endwin()
+        try:
+            fn(*args, **kwargs)
+            input("\nPress Enter to continue…")
+        finally:
+            curses.doupdate()
+
+    return wrapper
+
+
 def _open_nano(path):
     subprocess.run(["nano", str(path)])
 
@@ -113,49 +128,62 @@ def _link_directory_interactive():
 def project_list_items():
     from colette_cli.session import cmd_start, cmd_stop
 
-    def _start_all():
-        cmd_start(Namespace(machine=None, projects=[]))
-        input("\nPress Enter to continue…")
-
-    def _stop_all():
-        cmd_stop(Namespace(machine=None, projects=[]))
-        input("\nPress Enter to continue…")
-
-    items = [
-        MenuItem("Create project", action=_suspend(_create_project_interactive)),
-        MenuItem("Link directory", action=_suspend(_link_directory_interactive)),
-        MenuItem("Start all", action=_suspend(_start_all)),
-        MenuItem("Stop all", action=_suspend(_stop_all)),
-    ]
-
     projects = load_projects()
-    if not projects:
-        items.append(MenuItem("(no projects)", action=lambda: None))
-        return items
-
     cfg = load_config()
     default = cfg.get("default_machine", "")
 
-    by_machine = {}
-    for p in projects:
-        by_machine.setdefault(p["machine"], []).append(p)
+    def _start_all():
+        cmd_start(Namespace(machine=None, projects=[]))
 
-    def _machine_label(name):
-        return f"[{name}]" + (" (default)" if name == default else "")
+    def _stop_all():
+        cmd_stop(Namespace(machine=None, projects=[]))
 
-    for machine_name in sorted(by_machine, key=lambda m: (m != default, m)):
-        items.append(MenuItem(
-            _machine_label(machine_name),
-            action=lambda: None,
-            detail="",
-        ))
-        for project in sorted(by_machine[machine_name], key=lambda p: p["name"]):
-            tmpl = project.get("template") or "—"
-            items.append(MenuItem(
-                project["name"],
-                detail=tmpl,
-                children=lambda p=project: project_action_items(p),
-            ))
+    items = []
+
+    # ── Projects grouped under machine section titles ────────────────────────
+    if not projects:
+        items.append(MenuItem("(no projects)", action=lambda: None))
+    else:
+        by_machine = {}
+        for p in projects:
+            by_machine.setdefault(p["machine"], []).append(p)
+
+        def _machine_label(name):
+            return f"── {name}" + (" (default)" if name == default else "") + " ──"
+
+        for machine_name in sorted(by_machine, key=lambda m: (m != default, m)):
+            items.append(MenuItem(_machine_label(machine_name), selectable=False))
+            for project in sorted(by_machine[machine_name], key=lambda p: p["name"]):
+                tmpl = project.get("template") or "—"
+                items.append(MenuItem(
+                    project["name"],
+                    detail=tmpl,
+                    children=lambda p=project: project_action_items(p),
+                ))
+
+    # ── Separator ────────────────────────────────────────────────────────────
+    items.append(MenuItem("─" * 30, selectable=False))
+
+    # ── Global actions ───────────────────────────────────────────────────────
+    items.append(MenuItem("Start All", action=_suspend_with_pause(_start_all)))
+    items.append(MenuItem("Stop All", action=_suspend_with_pause(_stop_all)))
+
+    # ── Per-machine start/stop (only when multiple machines or any exist) ────
+    if projects:
+        for machine_name in sorted(by_machine, key=lambda m: (m != default, m)):
+            def _start_machine(mn=machine_name):
+                cmd_start(Namespace(machine=mn, projects=[]))
+
+            def _stop_machine(mn=machine_name):
+                cmd_stop(Namespace(machine=mn, projects=[]))
+
+            items.append(MenuItem(f"Start All — {machine_name}", action=_suspend_with_pause(_start_machine)))
+            items.append(MenuItem(f"Stop All — {machine_name}", action=_suspend_with_pause(_stop_machine)))
+
+    # ── Project management ───────────────────────────────────────────────────
+    items.append(MenuItem("Create project", action=_suspend(_create_project_interactive)))
+    items.append(MenuItem("Link project", action=_suspend(_link_directory_interactive)))
+
     return items
 
 
@@ -193,11 +221,9 @@ def project_action_items(project):
 
     def _start():
         cmd_start(Namespace(machine=None, projects=[name]))
-        input("\nPress Enter to continue…")
 
     def _stop():
         cmd_stop(Namespace(machine=None, projects=[name]))
-        input("\nPress Enter to continue…")
 
     def _open_code():
         if is_remote:
@@ -213,21 +239,19 @@ def project_action_items(project):
 
     def _delete():
         cmd_delete(Namespace(name=name))
-        input("\nPress Enter to continue…")
 
     def _unlink():
         cmd_unlink(Namespace(name=name))
-        input("\nPress Enter to continue…")
 
     return [
         MenuItem("Open session", action=_suspend(_open_session)),
-        MenuItem("Start", action=_suspend(_start)),
-        MenuItem("Stop", action=_suspend(_stop)),
         MenuItem("Code", action=_suspend(_open_code)),
         MenuItem("Logs", action=_suspend(_open_logs)),
+        MenuItem("Start", action=_suspend_with_pause(_start)),
+        MenuItem("Stop", action=_suspend_with_pause(_stop)),
         MenuItem("Edit hooks", children=lambda: project_hook_items(project)),
-        MenuItem("Delete", action=_suspend(_delete)),
-        MenuItem("Unlink", action=_suspend(_unlink)),
+        MenuItem("Unlink", action=_suspend_with_pause(_unlink)),
+        MenuItem("Delete", action=_suspend_with_pause(_delete)),
     ]
 
 
@@ -429,21 +453,18 @@ def machine_action_items(machine_name):
 
     def _edit():
         cmd_config_edit_machine(Namespace(machine_name=machine_name))
-        input("\nPress Enter to continue…")
 
     def _set_default():
         cmd_config_set_default(Namespace(machine_name=machine_name))
-        input("\nPress Enter to continue…")
 
     def _remove():
         cmd_config_remove_machine(Namespace(machine_name=machine_name))
-        input("\nPress Enter to continue…")
 
     return [
-        MenuItem("Edit", action=_suspend(_edit)),
-        MenuItem("Set as default", action=_suspend(_set_default)),
+        MenuItem("Edit", action=_suspend_with_pause(_edit)),
+        MenuItem("Set as default", action=_suspend_with_pause(_set_default)),
         MenuItem("Templates", children=lambda: machine_template_items(machine_name)),
-        MenuItem("Remove", action=_suspend(_remove)),
+        MenuItem("Remove", action=_suspend_with_pause(_remove)),
     ]
 
 
@@ -472,18 +493,16 @@ def machine_template_items(machine_name):
     for tmpl_name in template_names:
         def _edit(tn=tmpl_name):
             cmd_config_edit_template(Namespace(machine_name=machine_name, template_name=tn, params=None))
-            input("\nPress Enter to continue…")
 
         def _remove(tn=tmpl_name):
             cmd_config_remove_template(Namespace(machine_name=machine_name, template_name=tn))
-            input("\nPress Enter to continue…")
 
         items.append(MenuItem(
             tmpl_name,
             children=lambda tn=tmpl_name, e=_edit, r=_remove: [
-                MenuItem("Edit", action=_suspend(e)),
+                MenuItem("Edit", action=_suspend_with_pause(e)),
                 MenuItem("Edit hooks", children=lambda: template_hook_items(tn)),
-                MenuItem("Remove", action=_suspend(r)),
+                MenuItem("Remove", action=_suspend_with_pause(r)),
             ],
         ))
 

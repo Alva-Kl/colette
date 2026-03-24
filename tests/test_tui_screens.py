@@ -36,31 +36,32 @@ class TestProjectListItems:
     def test_global_actions_always_present(self, tmp_config):
         from colette_cli.tui.screens import project_list_items
         labels = _item_labels(project_list_items())
-        for label in ("Create project", "Link directory", "Start all", "Stop all"):
+        for label in ("Create project", "Link project", "Start All", "Stop All"):
             assert label in labels
 
-    def test_global_actions_are_first_four(self, tmp_config):
+    def test_global_actions_come_after_projects(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects
         from colette_cli.tui.screens import project_list_items
+        save_config(LOCAL_CFG)
+        save_projects([make_project("my-proj")])
         items = project_list_items()
-        assert items[0].label == "Create project"
-        assert items[1].label == "Link directory"
-        assert items[2].label == "Start all"
-        assert items[3].label == "Stop all"
+        labels = _item_labels(items)
+        proj_idx = labels.index("my-proj")
+        start_idx = labels.index("Start All")
+        assert proj_idx < start_idx
 
-    def test_projects_appear_after_global_actions(self, tmp_config):
+    def test_projects_listed_under_machine_title(self, tmp_config):
         from colette_cli.utils.config import save_config, save_projects
         from colette_cli.tui.screens import project_list_items
         save_config(LOCAL_CFG)
         save_projects([make_project("my-proj")])
         labels = _item_labels(project_list_items())
         assert "my-proj" in labels
-        assert labels.index("my-proj") > 3
 
-    def test_no_projects_placeholder_after_global_actions(self, tmp_config):
+    def test_no_projects_placeholder_present(self, tmp_config):
         from colette_cli.tui.screens import project_list_items
         labels = _item_labels(project_list_items())
         assert "(no projects)" in labels
-        assert labels.index("(no projects)") > 3
 
     def test_start_all_calls_cmd_start(self, tmp_config):
         from colette_cli.utils.config import save_config, save_projects
@@ -72,7 +73,7 @@ class TestProjectListItems:
              patch("curses.endwin"), patch("curses.doupdate"):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
-            next(i for i in items if i.label == "Start all").run()
+            next(i for i in items if i.label == "Start All").run()
         mock_start.assert_called_once()
         assert mock_start.call_args[0][0].projects == []
         assert mock_start.call_args[0][0].machine is None
@@ -86,7 +87,7 @@ class TestProjectListItems:
              patch("curses.endwin"), patch("curses.doupdate"):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
-            next(i for i in items if i.label == "Stop all").run()
+            next(i for i in items if i.label == "Stop All").run()
         mock_stop.assert_called_once()
         assert mock_stop.call_args[0][0].projects == []
 
@@ -113,7 +114,7 @@ class TestProjectListItems:
             next(i for i in items if i.label == "Create project").run()
         mock_create.assert_not_called()
 
-    def test_link_directory_calls_cmd_link(self, tmp_config, tmp_path):
+    def test_link_project_calls_cmd_link(self, tmp_config, tmp_path):
         from colette_cli.utils.config import save_config
         save_config(LOCAL_CFG)
         project_dir = tmp_path / "mydir"
@@ -123,11 +124,11 @@ class TestProjectListItems:
              patch("curses.endwin"), patch("curses.doupdate"):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
-            next(i for i in items if i.label == "Link directory").run()
+            next(i for i in items if i.label == "Link project").run()
         mock_link.assert_called_once()
         assert mock_link.call_args[0][0].path == str(project_dir)
 
-    def test_link_directory_aborts_on_empty_path(self, tmp_config):
+    def test_link_project_aborts_on_empty_path(self, tmp_config):
         from colette_cli.utils.config import save_config
         save_config(LOCAL_CFG)
         with patch("colette_cli.project.cmd_link") as mock_link, \
@@ -135,7 +136,7 @@ class TestProjectListItems:
              patch("curses.endwin"), patch("curses.doupdate"):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
-            next(i for i in items if i.label == "Link directory").run()
+            next(i for i in items if i.label == "Link project").run()
         mock_link.assert_not_called()
 
 
@@ -157,7 +158,7 @@ class TestProjectActionItems:
     def test_action_order(self, tmp_config):
         write_config(tmp_config, LOCAL_CFG)
         labels = _item_labels(self._get_items())
-        assert labels == ["Open session", "Start", "Stop", "Code", "Logs", "Edit hooks", "Delete", "Unlink"]
+        assert labels == ["Open session", "Code", "Logs", "Start", "Stop", "Edit hooks", "Unlink", "Delete"]
 
     def test_start_calls_cmd_start_with_project_name(self, tmp_config):
         write_config(tmp_config, LOCAL_CFG)

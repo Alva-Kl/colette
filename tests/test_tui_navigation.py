@@ -66,11 +66,11 @@ class TestMenuNavigation:
         result = self._run_menu([curses.KEY_DOWN, ord("\n")], items)
         assert result is items[1]
 
-    def test_up_at_top_stays_on_first_item(self):
+    def test_up_at_top_wraps_to_last_item(self):
         import curses
         items = [_make_leaf("A"), _make_leaf("B")]
         result = self._run_menu([curses.KEY_UP, ord("\n")], items)
-        assert result is items[0]
+        assert result is items[1]
 
     def test_j_navigates_down(self):
         items = [_make_leaf("A"), _make_leaf("B")]

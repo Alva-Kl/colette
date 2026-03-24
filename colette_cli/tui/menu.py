@@ -13,18 +13,21 @@ QUIT = _Quit()
 class MenuItem:
     """A single entry in a menu."""
 
-    def __init__(self, label, *, action=None, children=None, detail=""):
+    def __init__(self, label, *, action=None, children=None, detail="", selectable=True):
         """
         Args:
-            label:    Display text.
-            action:   Callable executed when selected (leaf item).
-            children: Callable returning a list[MenuItem] (sub-menu item).
-            detail:   Optional secondary text shown to the right of the label.
+            label:      Display text.
+            action:     Callable executed when selected (leaf item).
+            children:   Callable returning a list[MenuItem] (sub-menu item).
+            detail:     Optional secondary text shown to the right of the label.
+            selectable: If False, the item is rendered as a section title or
+                        separator and cannot be focused or activated.
         """
-        if action is None and children is None:
+        if selectable and action is None and children is None:
             raise ValueError("MenuItem requires either action or children")
         self.label = label
         self.detail = detail
+        self.selectable = selectable
         self._action = action
         self._children = children
 
@@ -54,6 +57,21 @@ class Menu:
         self._items = items
         self._breadcrumb = breadcrumb
         self._cursor = 0
+        # Start on the first selectable item
+        if items and not items[0].selectable:
+            self._cursor = self._next_selectable(0, 1)
+
+    def _next_selectable(self, from_index, direction):
+        """Return the next selectable index wrapping in the given direction (+1/-1)."""
+        n = len(self._items)
+        if n == 0:
+            return from_index
+        idx = (from_index + direction) % n
+        for _ in range(n):
+            if self._items[idx].selectable:
+                return idx
+            idx = (idx + direction) % n
+        return from_index  # no selectable items at all
 
     def run(self):
         """Block until the user makes a choice or navigates back.
@@ -71,13 +89,13 @@ class Menu:
             key = self._scr.getch()
 
             if key in (curses.KEY_UP, ord("k")):
-                self._cursor = max(0, self._cursor - 1)
+                self._cursor = self._next_selectable(self._cursor, -1)
 
             elif key in (curses.KEY_DOWN, ord("j")):
-                self._cursor = min(len(self._items) - 1, self._cursor + 1)
+                self._cursor = self._next_selectable(self._cursor, 1)
 
             elif key in (curses.KEY_RIGHT, curses.KEY_ENTER, ord("\n"), ord("\r")):
-                if self._items:
+                if self._items and self._items[self._cursor].selectable:
                     return self._items[self._cursor]
 
             elif key == curses.KEY_LEFT:
@@ -140,10 +158,15 @@ class Menu:
             if row < item_top or row > item_bot:
                 continue
 
-            is_selected = i == self._cursor
+            is_selected = i == self._cursor and item.selectable
             prefix = "▶ " if is_selected else "  "
             label = (prefix + item.label)[: self.DETAIL_COL - 2]
-            attr = curses.A_BOLD if is_selected else curses.A_NORMAL
+            if not item.selectable:
+                attr = curses.A_DIM
+            elif is_selected:
+                attr = curses.A_BOLD
+            else:
+                attr = curses.A_NORMAL
 
             # Left border
             try:
