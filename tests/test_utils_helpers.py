@@ -47,3 +47,21 @@ class TestFilterProjectsByName:
     def test_none_names_returns_all(self):
         result = filter_projects_by_name(PROJECTS, None)
         assert result == list(PROJECTS)
+
+
+class TestIsRemoteMachine:
+    def test_none_machine_is_not_remote(self):
+        from colette_cli.utils.helpers import is_remote_machine
+        assert is_remote_machine(None) is False
+
+    def test_local_machine_is_not_remote(self):
+        from colette_cli.utils.helpers import is_remote_machine
+        assert is_remote_machine({"type": "local"}) is False
+
+    def test_machine_without_type_is_not_remote(self):
+        from colette_cli.utils.helpers import is_remote_machine
+        assert is_remote_machine({}) is False
+
+    def test_ssh_machine_is_remote(self):
+        from colette_cli.utils.helpers import is_remote_machine
+        assert is_remote_machine({"type": "ssh", "host": "example.com"}) is True

@@ -23,7 +23,7 @@ from colette_cli.utils.config import (
     save_projects,
 )
 from colette_cli.utils.formatting import bold, cyan, dim, err, info, red
-from colette_cli.utils.helpers import build_projects_by_machine
+from colette_cli.utils.helpers import build_projects_by_machine, is_remote_machine
 from colette_cli.utils.ssh import ssh_interactive, ssh_run
 from colette_cli.utils.tmux import local_tmux_session
 from colette_cli.utils.validation import validate_project_name
@@ -89,10 +89,10 @@ def cmd_create(args):
     template_source = get_machine_template(machine, template_name)
     template_metadata = get_template_metadata(load_templates(), template_name)
 
-    is_remote = machine.get("type") == "ssh"
+    is_remote = is_remote_machine(machine)
     project_path = str(Path(projects_dir) / name)
 
-    print(
+    info(
         f"Creating project '{name}' on machine '{machine_name}' at '{project_path}' ..."
     )
 
@@ -163,22 +163,23 @@ def cmd_create(args):
     info(f"Project '{name}' created.")
 
 
-def cmd_delete(args):
+def cmd_delete(args, skip_confirmation: bool = False):
     """Delete a project (remove files and record)."""
     name = args.name
     project = require_project(name)
 
-    answer = input(
-        f"Delete project '{name}' at '{project['path']}' on '{project['machine']}'?\n"
-        f"This {red('cannot be undone')}. Type the project name to confirm: "
-    ).strip()
-    if answer != name:
-        print("Aborted.")
-        return
+    if not skip_confirmation:
+        answer = input(
+            f"Delete project '{name}' at '{project['path']}' on '{project['machine']}'?\n"
+            f"This {red('cannot be undone')}. Type the project name to confirm: "
+        ).strip()
+        if answer != name:
+            print("Aborted.")
+            return
 
     cfg = load_config()
-    machine = cfg.get("machines", {}).get(project["machine"])
-    is_remote = machine and machine.get("type") == "ssh"
+    machine = get_machine(cfg, project["machine"])
+    is_remote = is_remote_machine(machine)
 
     if is_remote:
         result = ssh_run(machine, f"rm -rf {project['path']}")
@@ -219,8 +220,8 @@ def cmd_attach(args):
     project = require_project(name)
 
     cfg = load_config()
-    machine = cfg.get("machines", {}).get(project["machine"])
-    is_remote = machine and machine.get("type") == "ssh"
+    machine = get_machine(cfg, project["machine"])
+    is_remote = is_remote_machine(machine)
     template_name = get_project_template_name(project)
     template_metadata = get_template_metadata(load_templates(), template_name)
     startup_command = build_project_bootstrap(
@@ -245,8 +246,8 @@ def cmd_code(args):
     project = require_project(name)
 
     cfg = load_config()
-    machine = cfg.get("machines", {}).get(project["machine"])
-    is_remote = machine and machine.get("type") == "ssh"
+    machine = get_machine(cfg, project["machine"])
+    is_remote = is_remote_machine(machine)
 
     if is_remote:
         host = machine.get("host", "")
@@ -289,7 +290,7 @@ def cmd_link(args):
         )
 
     machine = require_machine(cfg, machine_name)
-    is_remote = machine.get("type") == "ssh"
+    is_remote = is_remote_machine(machine)
 
     path = args.path
     name = args.name or Path(path).name

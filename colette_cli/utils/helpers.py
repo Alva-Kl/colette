@@ -18,3 +18,8 @@ def filter_projects_by_name(projects, selected_names):
         return list(projects)
     selected = set(selected_names)
     return [project for project in projects if project["name"] in selected]
+
+
+def is_remote_machine(machine):
+    """Return True if the machine is a remote SSH machine."""
+    return bool(machine and machine.get("type") == "ssh")

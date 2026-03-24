@@ -337,9 +337,23 @@ Launch a full-screen interactive terminal UI. Navigate with arrow keys:
 | ← / Escape | Go back |
 | `q` | Quit |
 
+All text input (project names, confirmations, parameter values) happens inside
+the TUI via overlay forms — the terminal is never suspended for user input.
+
 **Screens:**
-- **Projects** — lists all projects grouped by machine. Selecting a project offers: *Open session*, *Code*, *Edit config* (hook scripts).
-- **Templates** — lists all configured templates. Selecting a template offers: *Create project*, *Edit config* (hook scripts).
+- **Projects** — lists all projects grouped by machine. Selecting a project
+  offers: *Open session*, *Code*, *Logs*, *Start*, *Stop*, *Edit hooks*,
+  *Unlink*, *Delete*.
+- **Templates** — lists all configured templates. Selecting a template offers:
+  *Create project* (runs async — a desktop notification fires when done),
+  *Edit hooks*, *Edit parameters*.
+- **Config** — manage machines and their templates/parameters.
+- **Monitor** — open a split-pane tmux window for all active project sessions.
+
+**Async operations:** *Create project* and *Delete project* run in the
+background. The footer shows `⏳ N job(s) running…` while they are in
+progress; a desktop notification (`notify-send` on Linux, `osascript` on
+macOS) fires when each job completes.
 
 ```bash
 colette tui
@@ -354,7 +368,8 @@ colette monitor [-m <machine>] [<projects>...]
 ```
 
 Open a tmux window with read-only panes attached to each project session.
-Sessions that are not running are started automatically.
+Only projects with an already-running tmux session are shown; idle projects
+are skipped.
 
 ```bash
 colette monitor

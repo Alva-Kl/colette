@@ -2,11 +2,13 @@
 
 Each public function returns a list[MenuItem] for a particular screen.
 Actions that need to leave curses (open nano, launch tmux) are wrapped so
-curses is suspended/resumed around them.
+curses is suspended/resumed around them.  Actions that only need text input
+use in-TUI overlay forms from ``tui.forms`` instead.
 """
 
 import shlex
 import subprocess
+import threading
 from pathlib import Path
 
 from argparse import Namespace
@@ -28,6 +30,8 @@ from colette_cli.template import (
 )
 from colette_cli.utils.tmux import local_tmux_session
 from colette_cli.template import build_project_bootstrap
+from colette_cli.utils.notify import send_notification
+from . import state as _state
 
 from .menu import MenuItem
 
@@ -87,42 +91,58 @@ def main_menu_items():
 # ---------------------------------------------------------------------------
 
 def _create_project_interactive():
-    """Prompt for project details and call cmd_create."""
-    from colette_cli.project import cmd_create
+    """Collect project details via TUI forms and create the project async."""
+    from .forms import ask
     cfg = load_config()
     machines = list(cfg.get("machines", {}).keys())
     default_machine = cfg.get("default_machine") or (machines[0] if machines else "")
 
-    name = input("\nProject name: ").strip()
+    name = ask("Project name")
     if not name:
-        print("Aborted.")
-        input("\nPress Enter to continue…")
         return
 
-    machine = input(f"Machine [{default_machine}]: ").strip() or default_machine
-    template = input("Template (leave empty for none): ").strip() or None
+    machine = ask(f"Machine", default=default_machine) or default_machine
+    template = ask("Template (leave empty for none)") or None
 
-    cmd_create(Namespace(name=name, machine=machine, template=template))
-    input("\nPress Enter to continue…")
+    args = Namespace(name=name, machine=machine, template=template)
+    _run_create_async(args)
 
 
 def _link_directory_interactive():
-    """Prompt for path/name/machine and call cmd_link."""
+    """Collect link details via TUI forms and call cmd_link."""
     from colette_cli.project import cmd_link
+    from .forms import ask
     cfg = load_config()
     default_machine = cfg.get("default_machine", "")
 
-    path = input("\nDirectory path: ").strip()
+    path = ask("Directory path")
     if not path:
-        print("Aborted.")
-        input("\nPress Enter to continue…")
         return
 
-    machine = input(f"Machine [{default_machine}]: ").strip() or default_machine
-    name = input("Project name (leave empty to use directory name): ").strip() or None
+    machine = ask("Machine", default=default_machine) or default_machine
+    name = ask("Project name (leave empty for directory name)") or None
 
     cmd_link(Namespace(path=path, machine=machine, name=name))
-    input("\nPress Enter to continue…")
+
+
+def _run_create_async(args: Namespace) -> None:
+    """Launch cmd_create in a background thread and notify on completion."""
+    from colette_cli.project import cmd_create
+    label = f"Creating '{args.name}'"
+    _state.add_job(label)
+
+    def _worker():
+        try:
+            cmd_create(args)
+            send_notification("Colette", f"Project '{args.name}' created.")
+        except SystemExit:
+            send_notification("Colette", f"Failed to create '{args.name}'.")
+        except Exception as exc:
+            send_notification("Colette", f"Failed to create '{args.name}': {exc}")
+        finally:
+            _state.remove_job(label)
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def project_list_items():
@@ -178,8 +198,8 @@ def project_list_items():
     items.append(MenuItem("Stop All", action=_suspend_with_pause(_stop_all)))
 
     # ── Project management ───────────────────────────────────────────────────
-    items.append(MenuItem("Create project", action=_suspend(_create_project_interactive)))
-    items.append(MenuItem("Link project", action=_suspend(_link_directory_interactive)))
+    items.append(MenuItem("Create project", action=_create_project_interactive))
+    items.append(MenuItem("Link project", action=_link_directory_interactive))
 
     return items
 
@@ -235,7 +255,27 @@ def project_action_items(project):
         cmd_logs(Namespace(name=name, machine=None))
 
     def _delete():
-        cmd_delete(Namespace(name=name))
+        from .forms import type_to_confirm
+        if not type_to_confirm(
+            f"Delete '{name}' on '{project['machine']}'?",
+            expected=name,
+        ):
+            return
+        label = f"Deleting '{name}'"
+        _state.add_job(label)
+
+        def _worker():
+            try:
+                cmd_delete(Namespace(name=name), skip_confirmation=True)
+                send_notification("Colette", f"Project '{name}' deleted.")
+            except SystemExit:
+                send_notification("Colette", f"Failed to delete '{name}'.")
+            except Exception as exc:
+                send_notification("Colette", f"Failed to delete '{name}': {exc}")
+            finally:
+                _state.remove_job(label)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _unlink():
         cmd_unlink(Namespace(name=name))
@@ -248,7 +288,7 @@ def project_action_items(project):
         MenuItem("Stop", action=_suspend_with_pause(_stop)),
         MenuItem("Edit hooks", children=lambda: project_hook_items(project)),
         MenuItem("Unlink", action=_suspend_with_pause(_unlink)),
-        MenuItem("Delete", action=_suspend_with_pause(_delete)),
+        MenuItem("Delete", action=_delete),
     ]
 
 
@@ -295,25 +335,20 @@ def template_list_items():
 
 def template_action_items(template_name):
     def _create_project():
-        import sys
-        name = input(f"\nNew project name for template '{template_name}': ").strip()
+        from .forms import ask
+        name = ask(f"New project name for '{template_name}'")
         if not name:
-            print("Aborted.")
             return
-        # Delegate to cmd_create logic
-        from argparse import Namespace
-        from colette_cli.project.commands import cmd_create
         cfg = load_config()
         args = Namespace(
             name=name,
             machine=cfg.get("default_machine"),
             template=template_name,
         )
-        cmd_create(args)
-        input("\nPress Enter to continue…")
+        _run_create_async(args)
 
     return [
-        MenuItem("Create project", action=_suspend(_create_project)),
+        MenuItem("Create project", action=_create_project),
         MenuItem("Edit hooks", children=lambda: template_hook_items(template_name)),
         MenuItem("Edit parameters", children=lambda: template_param_items(template_name)),
     ]
@@ -348,51 +383,45 @@ def template_param_items(template_name):
         save_templates(templates_cfg)
 
     def _add_param():
-        key = input("\nParameter name (e.g. PORT): ").strip().upper()
+        from .forms import ask
+        key = ask("Parameter name (e.g. PORT)")
         if not key:
-            print("Aborted.")
-            input("\nPress Enter to continue…")
             return
-        value = input(f"Value for {key}: ").strip()
+        key = key.strip().upper()
+        if not key:
+            return
+        value = ask(f"Value for {key}") or ""
         params = _reload_metadata()
         params[key] = value
         _save_params(params)
-        print(f"Parameter {key} set.")
-        input("\nPress Enter to continue…")
 
-    items = [MenuItem("Add parameter", action=_suspend(_add_param))]
+    items = [MenuItem("Add parameter", action=_add_param)]
 
     params = _reload_metadata()
     for key, value in sorted(params.items()):
         def _edit(k=key):
-            new_val = input(f"\nNew value for {k} [{params[k]}]: ").strip()
-            if not new_val:
-                print("Aborted.")
-                input("\nPress Enter to continue…")
+            from .forms import ask
+            new_val = ask(f"New value for {k}", default=params[k])
+            if new_val is None:
                 return
             p = _reload_metadata()
             p[k] = new_val
             _save_params(p)
-            print(f"Parameter {k} updated.")
-            input("\nPress Enter to continue…")
 
         def _remove(k=key):
-            ans = input(f"\nRemove parameter {k}? [y/N]: ").strip().lower()
-            if ans != "y":
-                print("Aborted.")
-            else:
-                p = _reload_metadata()
-                p.pop(k, None)
-                _save_params(p)
-                print(f"Parameter {k} removed.")
-            input("\nPress Enter to continue…")
+            from .forms import confirm
+            if not confirm(f"Remove parameter '{k}'?", default=False):
+                return
+            p = _reload_metadata()
+            p.pop(k, None)
+            _save_params(p)
 
         items.append(MenuItem(
             key,
             detail=str(value),
             children=lambda k=key, e=_edit, r=_remove: [
-                MenuItem("Edit value", action=_suspend(e)),
-                MenuItem("Remove", action=_suspend(r)),
+                MenuItem("Edit value", action=e),
+                MenuItem("Remove", action=r),
             ],
         ))
 
@@ -477,15 +506,13 @@ def machine_template_items(machine_name):
     template_names = list_machine_template_names(machine)
 
     def _add():
-        name = input(f"\nTemplate name to add to '{machine_name}': ").strip()
+        from .forms import ask
+        name = ask(f"Template name to add to '{machine_name}'")
         if not name:
-            print("Aborted.")
-            input("\nPress Enter to continue…")
             return
         cmd_config_add_template(Namespace(machine_name=machine_name, template_name=name, params=[]))
-        input("\nPress Enter to continue…")
 
-    items = [MenuItem("Add template", action=_suspend(_add))]
+    items = [MenuItem("Add template", action=_add)]
 
     for tmpl_name in template_names:
         def _edit(tn=tmpl_name):

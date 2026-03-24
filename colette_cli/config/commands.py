@@ -167,7 +167,7 @@ def cmd_config_add_machine(args):
 
     if not cfg.get("default_machine"):
         cfg["default_machine"] = name
-        print(f"Set '{name}' as the default machine.")
+        info(f"Set '{name}' as the default machine.")
     else:
         ans = input(f"Set '{name}' as the default machine? [y/N]: ").strip().lower()
         if ans == "y":
@@ -275,7 +275,7 @@ def cmd_config_add_template(args):
     )
     save_templates(templates_cfg)
     scaffold_template_hook_files(args.template_name)
-    print(f"Hook files: {get_template_dir(args.template_name)}")
+    info(f"Hook files: {get_template_dir(args.template_name)}")
     info(f"Template '{args.template_name}' added to machine '{args.machine_name}'.")
 
 
@@ -326,7 +326,7 @@ def cmd_config_edit_template(args):
     upsert_template_metadata(templates_cfg, args.template_name, description, params)
     save_templates(templates_cfg)
     scaffold_template_hook_files(args.template_name)
-    print(f"Hook files: {get_template_dir(args.template_name)}")
+    info(f"Hook files: {get_template_dir(args.template_name)}")
     info(f"Template '{args.template_name}' updated on machine '{args.machine_name}'.")
 
 

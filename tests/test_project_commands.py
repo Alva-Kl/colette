@@ -184,6 +184,21 @@ class TestCmdDelete:
         assert project_dir.exists()
         assert len(load_projects()) == 1
 
+    def test_delete_skip_confirmation_removes_without_prompt(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_projects, load_projects
+        from colette_cli.project.commands import cmd_delete
+        save_config(LOCAL_CFG)
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        save_projects([make_project("proj", path=str(project_dir))])
+        args = MagicMock()
+        args.name = "proj"
+        with patch("builtins.input") as mock_input:
+            cmd_delete(args, skip_confirmation=True)
+        mock_input.assert_not_called()
+        assert not project_dir.exists()
+        assert load_projects() == []
+
 
 class TestCmdCreate:
     def test_oncreate_hook_runs_on_create(self, tmp_config, tmp_path):

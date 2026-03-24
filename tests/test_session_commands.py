@@ -106,3 +106,117 @@ class TestCmdStop:
             cmd_stop(args)
         assert marker.exists(), "onstop hook did not run"
         assert marker.read_text().strip() == "onstop"
+
+
+# ---------------------------------------------------------------------------
+# TestCmdMonitor
+# ---------------------------------------------------------------------------
+
+class TestCmdMonitor:
+    def test_monitor_only_shows_active_sessions(self, tmp_config):
+        """Only projects with an active tmux session appear in the monitor window."""
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.session.commands import cmd_monitor
+        save_config(LOCAL_CFG)
+        save_projects([
+            make_project("active-proj", path="/tmp/active"),
+            make_project("idle-proj", path="/tmp/idle"),
+        ])
+        args = MagicMock(machine=None, projects=[])
+
+        with patch("colette_cli.session.commands.get_sessions", return_value={"active-proj"}) as mock_sessions, \
+             patch("colette_cli.session.commands.create_tmux_window_with_panes") as mock_panes, \
+             patch("subprocess.run"):
+            cmd_monitor(args)
+
+        active_list = mock_panes.call_args[0][1]
+        active_names = [p["name"] for p, _ in active_list]
+        assert "active-proj" in active_names
+        assert "idle-proj" not in active_names
+
+    def test_monitor_does_not_create_new_sessions(self, tmp_config):
+        """Monitor must NOT start new tmux sessions for idle projects."""
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.session.commands import cmd_monitor
+        save_config(LOCAL_CFG)
+        save_projects([make_project("idle-proj", path="/tmp/idle")])
+        args = MagicMock(machine=None, projects=[])
+
+        with patch("colette_cli.session.commands.get_sessions", return_value=set()), \
+             patch("subprocess.run") as mock_run, \
+             patch("colette_cli.session.commands.create_tmux_window_with_panes"):
+            # Should raise SystemExit because no active sessions → err()
+            with pytest.raises(SystemExit):
+                cmd_monitor(args)
+
+        # subprocess.run should NOT have been called to create a tmux session
+        tmux_new = [c for c in mock_run.call_args_list
+                    if c[0] and "new-session" in c[0][0]]
+        assert not tmux_new, "monitor should not create new sessions"
+
+    def test_monitor_exits_when_no_active_sessions(self, tmp_config):
+        """cmd_monitor exits with an error when no sessions are active."""
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.session.commands import cmd_monitor
+        save_config(LOCAL_CFG)
+        save_projects([make_project("proj")])
+        args = MagicMock(machine=None, projects=[])
+
+        with patch("colette_cli.session.commands.get_sessions", return_value=set()), \
+             patch("colette_cli.session.commands.create_tmux_window_with_panes"):
+            with pytest.raises(SystemExit):
+                cmd_monitor(args)
+
+    def test_monitor_blocked_from_monitor_session(self, tmp_config):
+        """cmd_monitor exits when run from within the colette-monitor session."""
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.session.commands import cmd_monitor
+        save_config(LOCAL_CFG)
+        save_projects([make_project("proj")])
+        args = MagicMock(machine=None, projects=[])
+
+        with patch("colette_cli.session.commands._get_current_tmux_session", return_value="colette-monitor"):
+            with pytest.raises(SystemExit):
+                cmd_monitor(args)
+
+    def test_monitor_blocked_from_project_session(self, tmp_config):
+        """cmd_monitor exits when run from within a registered colette project session."""
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.session.commands import cmd_monitor
+        save_config(LOCAL_CFG)
+        save_projects([make_project("my-proj", path="/tmp/my-proj")])
+        args = MagicMock(machine=None, projects=[])
+
+        with patch("colette_cli.session.commands._get_current_tmux_session", return_value="my-proj"):
+            with pytest.raises(SystemExit):
+                cmd_monitor(args)
+
+    def test_monitor_allowed_outside_tmux(self, tmp_config):
+        """cmd_monitor proceeds normally when not inside a tmux session."""
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.session.commands import cmd_monitor
+        save_config(LOCAL_CFG)
+        save_projects([make_project("proj", path="/tmp/proj")])
+        args = MagicMock(machine=None, projects=[])
+
+        with patch("colette_cli.session.commands._get_current_tmux_session", return_value=None), \
+             patch("colette_cli.session.commands.get_sessions", return_value={"proj"}), \
+             patch("colette_cli.session.commands.create_tmux_window_with_panes") as mock_panes:
+            cmd_monitor(args)
+
+        mock_panes.assert_called_once()
+
+    def test_monitor_allowed_from_unrelated_tmux_session(self, tmp_config):
+        """cmd_monitor proceeds normally when run from an unrelated tmux session."""
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.session.commands import cmd_monitor
+        save_config(LOCAL_CFG)
+        save_projects([make_project("proj", path="/tmp/proj")])
+        args = MagicMock(machine=None, projects=[])
+
+        with patch("colette_cli.session.commands._get_current_tmux_session", return_value="unrelated-session"), \
+             patch("colette_cli.session.commands.get_sessions", return_value={"proj"}), \
+             patch("colette_cli.session.commands.create_tmux_window_with_panes") as mock_panes:
+            cmd_monitor(args)
+
+        mock_panes.assert_called_once()

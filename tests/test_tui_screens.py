@@ -22,6 +22,14 @@ def _item_labels(items):
     return [i.label for i in items]
 
 
+class _SyncThread:
+    """Drop-in for threading.Thread that runs target synchronously."""
+    def __init__(self, target, daemon=False):
+        self._target = target
+    def start(self):
+        self._target()
+
+
 def _call_action(item):
     """Call a leaf MenuItem's action with curses suspended (patched out)."""
     with patch("curses.endwin"), patch("curses.doupdate"):
@@ -95,8 +103,8 @@ class TestProjectListItems:
         from colette_cli.utils.config import save_config
         save_config(LOCAL_CFG)
         with patch("colette_cli.project.cmd_create") as mock_create, \
-             patch("builtins.input", side_effect=["new-proj", "", "", ""]), \
-             patch("curses.endwin"), patch("curses.doupdate"):
+             patch("colette_cli.tui.forms.ask", side_effect=["new-proj", "local", ""]), \
+             patch("colette_cli.tui.screens.threading.Thread", _SyncThread):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
             next(i for i in items if i.label == "Create project").run()
@@ -107,8 +115,7 @@ class TestProjectListItems:
         from colette_cli.utils.config import save_config
         save_config(LOCAL_CFG)
         with patch("colette_cli.project.cmd_create") as mock_create, \
-             patch("builtins.input", side_effect=["", ""]), \
-             patch("curses.endwin"), patch("curses.doupdate"):
+             patch("colette_cli.tui.forms.ask", return_value=None):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
             next(i for i in items if i.label == "Create project").run()
@@ -120,8 +127,7 @@ class TestProjectListItems:
         project_dir = tmp_path / "mydir"
         project_dir.mkdir()
         with patch("colette_cli.project.cmd_link") as mock_link, \
-             patch("builtins.input", side_effect=[str(project_dir), "", "", ""]), \
-             patch("curses.endwin"), patch("curses.doupdate"):
+             patch("colette_cli.tui.forms.ask", side_effect=[str(project_dir), "local", ""]):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
             next(i for i in items if i.label == "Link project").run()
@@ -132,8 +138,7 @@ class TestProjectListItems:
         from colette_cli.utils.config import save_config
         save_config(LOCAL_CFG)
         with patch("colette_cli.project.cmd_link") as mock_link, \
-             patch("builtins.input", side_effect=["", ""]), \
-             patch("curses.endwin"), patch("curses.doupdate"):
+             patch("colette_cli.tui.forms.ask", return_value=None):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
             next(i for i in items if i.label == "Link project").run()
@@ -188,8 +193,8 @@ class TestProjectActionItems:
         write_config(tmp_config, LOCAL_CFG)
         project = make_project("my-proj")
         with patch("colette_cli.project.cmd_delete") as mock_delete, \
-             patch("builtins.input"), \
-             patch("curses.endwin"), patch("curses.doupdate"):
+             patch("colette_cli.tui.forms.type_to_confirm", return_value=True), \
+             patch("colette_cli.tui.screens.threading.Thread", _SyncThread):
             items = self._get_items(project)
             next(i for i in items if i.label == "Delete").run()
         mock_delete.assert_called_once()
@@ -243,10 +248,9 @@ class TestTemplateActionItems:
         save_config(LOCAL_CFG)
         items = template_action_items("my-tmpl")
         create = next(i for i in items if i.label == "Create project")
-        # cmd_create imported lazily inside action — patch the commands module
-        with patch("colette_cli.project.commands.cmd_create") as mock_create, \
-             patch("builtins.input", side_effect=["new-proj", ""]), \
-             patch("curses.endwin"), patch("curses.doupdate"):
+        with patch("colette_cli.project.cmd_create") as mock_create, \
+             patch("colette_cli.tui.forms.ask", return_value="new-proj"), \
+             patch("colette_cli.tui.screens.threading.Thread", _SyncThread):
             create.run()
         mock_create.assert_called_once()
         args = mock_create.call_args[0][0]
@@ -259,9 +263,8 @@ class TestTemplateActionItems:
         save_config(LOCAL_CFG)
         items = template_action_items("my-tmpl")
         create = next(i for i in items if i.label == "Create project")
-        with patch("colette_cli.project.commands.cmd_create") as mock_create, \
-             patch("builtins.input", return_value=""), \
-             patch("curses.endwin"), patch("curses.doupdate"):
+        with patch("colette_cli.project.cmd_create") as mock_create, \
+             patch("colette_cli.tui.forms.ask", return_value=None):
             create.run()
         mock_create.assert_not_called()
 
@@ -317,8 +320,7 @@ class TestTemplateParamItems:
         save_config(LOCAL_CFG)
         save_templates({"templates": [{"name": "tmpl"}]})
         items = template_param_items("tmpl")
-        with patch("builtins.input", side_effect=["MYKEY", "myval", ""]), \
-             patch("curses.endwin"), patch("curses.doupdate"):
+        with patch("colette_cli.tui.forms.ask", side_effect=["MYKEY", "myval"]):
             items[0].run()  # Add parameter
         tmpl = next(t for t in load_templates()["templates"] if t["name"] == "tmpl")
         assert tmpl.get("params", {}).get("MYKEY") == "myval"
@@ -329,8 +331,7 @@ class TestTemplateParamItems:
         save_config(LOCAL_CFG)
         save_templates({"templates": [{"name": "tmpl"}]})
         items = template_param_items("tmpl")
-        with patch("builtins.input", side_effect=["", ""]), \
-             patch("curses.endwin"), patch("curses.doupdate"):
+        with patch("colette_cli.tui.forms.ask", return_value=None):
             items[0].run()
         tmpl = next(t for t in load_templates()["templates"] if t["name"] == "tmpl")
         assert not tmpl.get("params")
@@ -342,8 +343,7 @@ class TestTemplateParamItems:
         items = template_param_items("tmpl")
         port_item = next(i for i in items if i.label == "PORT")
         remove_item = next(i for i in port_item.get_children() if i.label == "Remove")
-        with patch("builtins.input", side_effect=["y", ""]), \
-             patch("curses.endwin"), patch("curses.doupdate"):
+        with patch("colette_cli.tui.forms.confirm", return_value=True):
             remove_item.run()
         tmpl = next(t for t in load_templates()["templates"] if t["name"] == "tmpl")
         assert "PORT" not in (tmpl.get("params") or {})
@@ -355,8 +355,7 @@ class TestTemplateParamItems:
         items = template_param_items("tmpl")
         port_item = next(i for i in items if i.label == "PORT")
         edit_item = next(i for i in port_item.get_children() if i.label == "Edit value")
-        with patch("builtins.input", side_effect=["9090", ""]), \
-             patch("curses.endwin"), patch("curses.doupdate"):
+        with patch("colette_cli.tui.forms.ask", return_value="9090"):
             edit_item.run()
         tmpl = next(t for t in load_templates()["templates"] if t["name"] == "tmpl")
         assert tmpl["params"]["PORT"] == "9090"

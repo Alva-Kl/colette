@@ -26,9 +26,11 @@ colette_cli/
     registry.py            Scaffold / metadata helpers (scaffold_template_hook_files, upsert/remove metadata)
     __init__.py            Re-exports for the template package
   tui/
-    app.py                 cmd_tui entry point — curses wrapper and screen-stack loop
-    menu.py                Menu widget — renders items, handles arrow-key navigation
-    screens.py             Screen builders — main menu, project/template lists and actions
+    app.py                 cmd_tui entry point — curses wrapper, screen-stack loop, sets tui.state.stdscr
+    menu.py                Menu widget — renders items, handles arrow-key navigation, jobs footer
+    screens.py             Screen builders — main menu, project/template lists and actions; async create/delete
+    forms.py               In-TUI overlay forms: ask(), confirm(), type_to_confirm()
+    state.py               Shared TUI state: stdscr reference, running_jobs list (thread-safe)
     __init__.py            Re-exports cmd_tui
   utils/
     helpers.py             build_projects_by_machine, filter_projects_by_name
@@ -36,9 +38,10 @@ colette_cli/
     validation.py          validate_project_name / validate_machine_name
     ssh.py                 ssh_run, ssh_interactive
     tmux.py                local_tmux_session, ensure_session, get_sessions, create_tmux_window_with_panes
+    notify.py              send_notification(title, body) — desktop notifications (Linux/macOS)
     env.py                 (environment helpers)
 tests/
-  conftest.py              tmp_config fixture + shared helpers
+  conftest.py              tmp_config fixture + reset_tui_state autouse fixture + shared helpers
   test_utils_config.py
   test_utils_helpers.py
   test_utils_formatting.py
@@ -49,6 +52,10 @@ tests/
   test_config_commands.py
   test_session_commands.py
   test_cli_parser.py
+  test_tui_screens.py
+  test_tui_navigation.py
+  test_tui_forms.py        Tests for ask(), confirm(), type_to_confirm()
+  test_notify.py           Tests for send_notification()
 scripts/
   build.sh                 beta / prod zipapp build
   install.sh               install helper
@@ -236,6 +243,43 @@ mock_run.assert_called_once()
 ```python
 with patch("builtins.input", return_value="y"):
     cmd_something(args)
+```
+
+### TUI form actions
+
+Actions that collect user input use overlay forms from `tui/forms.py` instead
+of suspending curses. To test these actions, patch the form functions directly:
+
+```python
+with patch("colette_cli.tui.forms.ask", return_value="my-project"):
+    item.run()
+
+with patch("colette_cli.tui.forms.confirm", return_value=True):
+    item.run()
+
+with patch("colette_cli.tui.forms.type_to_confirm", return_value=True):
+    item.run()
+```
+
+The `reset_tui_state` fixture in `conftest.py` is autouse and ensures
+`tui.state.stdscr` is `None` before each test, so forms fall back to plain
+`input()` when not explicitly mocked.
+
+### Async TUI actions (Create / Delete)
+
+*Create project* and *Delete project* in the TUI run in background threads.
+Use `_SyncThread` (defined in `test_tui_screens.py`) to run them synchronously
+and patch `colette_cli.utils.notify.send_notification` to suppress desktop
+notifications during tests:
+
+```python
+class _SyncThread:
+    def __init__(self, target, daemon=False): self._target = target
+    def start(self): self._target()
+
+with patch("colette_cli.tui.screens.threading.Thread", _SyncThread), \
+     patch("colette_cli.utils.notify.send_notification"):
+    item.run()
 ```
 
 ### ⚠️ MagicMock and `name`

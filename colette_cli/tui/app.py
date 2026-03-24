@@ -13,11 +13,13 @@ from colette_cli.utils.formatting import err
 from .menu import Menu, QUIT
 from .screens import main_menu_items
 from .splash import show_splash
+from . import state
 
 
 def _run(stdscr):
     """Main TUI loop — runs inside curses.wrapper."""
     curses.use_default_colors()
+    state.stdscr = stdscr
 
     show_splash(stdscr)
 

@@ -4,6 +4,25 @@ import json
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def suppress_notifications(monkeypatch):
+    """Suppress real desktop notifications during every test."""
+    noop = lambda *a, **kw: None
+    monkeypatch.setattr("colette_cli.utils.notify.send_notification", noop)
+    monkeypatch.setattr("colette_cli.tui.screens.send_notification", noop)
+
+
+@pytest.fixture(autouse=True)
+def reset_tui_state():
+    """Reset shared TUI module state before and after every test."""
+    import colette_cli.tui.state as tui_state
+    tui_state.stdscr = None
+    tui_state.running_jobs.clear()
+    yield
+    tui_state.stdscr = None
+    tui_state.running_jobs.clear()
+
+
 @pytest.fixture()
 def tmp_config(tmp_path, monkeypatch):
     """Redirect all colette config paths to a temporary directory."""
