@@ -2,8 +2,6 @@
 
 import curses
 
-from . import state
-
 
 class _Quit:
     """Sentinel returned by Menu.run() when the user presses q or Escape."""
@@ -88,16 +86,8 @@ class Menu:
 
         while True:
             self._render()
-            # Use a short timeout when background jobs are running so the
-            # jobs indicator refreshes automatically.
-            if state.running_jobs:
-                self._scr.timeout(500)
-            else:
-                self._scr.timeout(-1)
+            self._scr.timeout(-1)
             key = self._scr.getch()
-            if key == -1:
-                # Timeout tick — just re-render to update jobs indicator.
-                continue
 
             if key in (curses.KEY_UP, ord("k")):
                 self._cursor = self._next_selectable(self._cursor, -1)
@@ -152,12 +142,7 @@ class Menu:
                 pass
 
         # ── Footer hint (row h-1) ──────────────────────────────────────────
-        jobs = state.running_jobs
-        if jobs:
-            n = len(jobs)
-            hint = f" ⏳ {n} job{'s' if n != 1 else ''} running… "
-        else:
-            hint = " ↑↓ navigate   → select   ← back   q quit "
+        hint = " ↑↓ navigate   → select   ← back   q quit "
         self._scr.addstr(h - 1, 0, hint.ljust(w - 1)[: w - 1], curses.A_DIM)
 
         # ── Items (rows 2..h-3, inside the box) ────────────────────────────

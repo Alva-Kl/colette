@@ -78,6 +78,20 @@ class TestCmdStop:
         mock_run.assert_called_once()
         assert mock_run.call_args[0][0] == ["tmux", "kill-session", "-t", "proj"]
 
+    def test_stop_tmux_call_uses_capture_output(self, tmp_config):
+        """tmux kill-session must use capture_output=True to avoid tty pollution."""
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.session.commands import cmd_stop
+        save_config(LOCAL_CFG)
+        save_projects([make_project("proj", path="/tmp")])
+        args = MagicMock(machine=None, projects=[])
+        with (
+            patch("colette_cli.session.commands.run_template_hook", return_value=True),
+            patch("subprocess.run") as mock_run,
+        ):
+            cmd_stop(args)
+        assert mock_run.call_args[1].get("capture_output") is True
+
     def test_onstop_hook_runs_on_stop(self, tmp_config, tmp_path):
         """The onstop hook actually executes when cmd_stop is called."""
         from colette_cli.utils.config import save_config, save_projects, write_template_hook

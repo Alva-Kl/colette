@@ -15,7 +15,10 @@ def _ssh_base_args(machine):
 def ssh_run(machine, remote_cmd):
     """Run a non-interactive command on a remote machine; return CompletedProcess."""
     return subprocess.run(
-        _ssh_base_args(machine) + [remote_cmd], capture_output=True, text=True
+        _ssh_base_args(machine) + [remote_cmd],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
     )
 
 

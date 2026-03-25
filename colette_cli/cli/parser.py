@@ -192,4 +192,32 @@ def build_parser():
 
     sub.add_parser("tui", help="Interactive TUI (arrow-key navigation)")
 
+    dbgp = sub.add_parser(
+        "debug",
+        help="Debug utilities",
+        description="Debug utilities for inspecting Colette internals.",
+    )
+    dbgsub = dbgp.add_subparsers(dest="debug_cmd", metavar="<action>")
+    dbgp.set_defaults(debug_parser=dbgp)
+    hlp = dbgsub.add_parser(
+        "hook-log",
+        help="Show hook script failure log",
+        description=(
+            "Shows the log of hook scripts that exited with a non-zero status.\n"
+            "Entries are stored in ~/.config/colette/hook-failures.json (last 200 kept)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    hlp.add_argument(
+        "--project",
+        "-p",
+        metavar="NAME",
+        help="Filter entries to a specific project",
+    )
+    hlp.add_argument(
+        "--clear",
+        action="store_true",
+        help="Clear the hook failure log",
+    )
+
     return parser

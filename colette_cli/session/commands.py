@@ -125,7 +125,9 @@ def cmd_stop(args):
                 ssh_run(machine, f"tmux kill-session -t {name} 2>/dev/null")
             else:
                 subprocess.run(
-                    ["tmux", "kill-session", "-t", name], capture_output=True
+                    ["tmux", "kill-session", "-t", name],
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
                 )
             info(f"Stopped session for '{name}'")
 

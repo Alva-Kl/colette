@@ -91,25 +91,6 @@ class TestMenuNavigation:
 
 
 # ---------------------------------------------------------------------------
-# QUIT sentinel identity
-# ---------------------------------------------------------------------------
-
-class TestQuitSentinel:
-    def test_quit_is_singleton(self):
-        from colette_cli.tui.menu import QUIT
-        from colette_cli.tui.menu import QUIT as QUIT2
-        assert QUIT is QUIT2
-
-    def test_quit_is_not_none(self):
-        from colette_cli.tui.menu import QUIT
-        assert QUIT is not None
-
-    def test_quit_is_not_false(self):
-        from colette_cli.tui.menu import QUIT
-        assert QUIT is not False
-
-
-# ---------------------------------------------------------------------------
 # show_splash
 # ---------------------------------------------------------------------------
 

@@ -10,6 +10,8 @@ PROJECTS_FILE = CONFIG_DIR / "projects.json"
 TEMPLATES_FILE = CONFIG_DIR / "templates.json"
 TEMPLATE_SCRIPTS_DIR = CONFIG_DIR / "templates"
 PROJECT_HOOKS_DIR = CONFIG_DIR / "projects"
+HOOK_FAILURES_FILE = CONFIG_DIR / "hook-failures.json"
+_MAX_HOOK_FAILURES = 200
 TEMPLATE_HOOK_FILENAMES = {
     "oncreate": ".oncreate",
     "onstart": ".onstart",
@@ -209,3 +211,29 @@ def scaffold_project_hook_files(project_name):
                     + f"# Colette runs this hook for project '{project_name}' during {hook_name}.\n"
                 )
             write_project_hook(project_name, hook_name, content)
+
+
+def load_hook_failures():
+    """Load the hook failure log; returns an empty list if not present or malformed."""
+    if not HOOK_FAILURES_FILE.exists():
+        return []
+    try:
+        return json.loads(HOOK_FAILURES_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def append_hook_failure(entry):
+    """Append a hook failure entry to the log, keeping at most _MAX_HOOK_FAILURES entries."""
+    ensure_config_dir()
+    failures = load_hook_failures()
+    failures.append(entry)
+    if len(failures) > _MAX_HOOK_FAILURES:
+        failures = failures[-_MAX_HOOK_FAILURES:]
+    HOOK_FAILURES_FILE.write_text(json.dumps(failures, indent=2) + "\n")
+
+
+def clear_hook_failures():
+    """Clear the hook failure log."""
+    ensure_config_dir()
+    HOOK_FAILURES_FILE.write_text("[]\n")

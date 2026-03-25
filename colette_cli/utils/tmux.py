@@ -17,7 +17,10 @@ def _ensure_session_local(project, startup_command=None):
     path = project["path"]
     startup_command = startup_command or DEFAULT_BOOTSTRAP
     r = subprocess.run(
-        ["tmux", "has-session", "-t", name], capture_output=True, text=True
+        ["tmux", "has-session", "-t", name],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
     )
     if r.returncode != 0:
         local_path = str(Path(path).expanduser())
@@ -35,6 +38,7 @@ def _ensure_session_local(project, startup_command=None):
                 startup_command,
             ],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
         )
         return True
     return False
@@ -71,6 +75,7 @@ def _get_sessions_local():
         ["tmux", "list-sessions", "-F", "#{session_name}"],
         capture_output=True,
         text=True,
+        stdin=subprocess.DEVNULL,
     )
     return set(r.stdout.strip().splitlines()) if r.returncode == 0 else set()
 
@@ -102,16 +107,16 @@ def _create_tmux_window_with_panes(
     inside_tmux = bool(os.environ.get("TMUX"))
 
     if replace_existing:
-        subprocess.run(["tmux", "kill-window", "-t", session_name], capture_output=True)
+        subprocess.run(["tmux", "kill-window", "-t", session_name], capture_output=True, stdin=subprocess.DEVNULL)
         subprocess.run(
-            ["tmux", "kill-session", "-t", session_name], capture_output=True
+            ["tmux", "kill-session", "-t", session_name], capture_output=True, stdin=subprocess.DEVNULL
         )
 
     if inside_tmux:
         # Create a new window and capture its unique window ID for precise targeting
         r = subprocess.run(
             ["tmux", "new-window", "-P", "-F", "#{window_id}", "-n", session_name, first_cmd],
-            capture_output=True, text=True,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
         )
         target = r.stdout.strip()  # e.g. "@5" — unique across all sessions
     else:
@@ -121,7 +126,7 @@ def _create_tmux_window_with_panes(
                 "tmux", "new-session", "-d", "-P", "-F", "#{window_id}",
                 "-s", session_name, "-n", session_name, first_cmd,
             ],
-            capture_output=True, text=True,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
         )
         target = r.stdout.strip()
 
@@ -132,10 +137,12 @@ def _create_tmux_window_with_panes(
         subprocess.run(
             ["tmux", "split-window", "-t", target, cmd],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
         )
         subprocess.run(
             ["tmux", "select-layout", "-t", target, "tiled"],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
         )
 
     if inside_tmux:

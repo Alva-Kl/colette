@@ -9,7 +9,6 @@ def suppress_notifications(monkeypatch):
     """Suppress real desktop notifications during every test."""
     noop = lambda *a, **kw: None
     monkeypatch.setattr("colette_cli.utils.notify.send_notification", noop)
-    monkeypatch.setattr("colette_cli.tui.screens.send_notification", noop)
 
 
 @pytest.fixture(autouse=True)
@@ -17,10 +16,8 @@ def reset_tui_state():
     """Reset shared TUI module state before and after every test."""
     import colette_cli.tui.state as tui_state
     tui_state.stdscr = None
-    tui_state.running_jobs.clear()
     yield
     tui_state.stdscr = None
-    tui_state.running_jobs.clear()
 
 
 @pytest.fixture()
@@ -41,6 +38,7 @@ def tmp_config(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg_mod, "TEMPLATES_FILE", config_dir / "templates.json")
     monkeypatch.setattr(cfg_mod, "TEMPLATE_SCRIPTS_DIR", templates_dir)
     monkeypatch.setattr(cfg_mod, "PROJECT_HOOKS_DIR", projects_dir)
+    monkeypatch.setattr(cfg_mod, "HOOK_FAILURES_FILE", config_dir / "hook-failures.json")
 
     return config_dir
 

@@ -410,6 +410,39 @@ colette code my-project
 
 ---
 
+### `colette debug` — debug utilities
+
+```
+colette debug <action> [options]
+```
+
+Debug sub-commands for inspecting Colette internals.
+
+#### `colette debug hook-log` — show hook failure log
+
+```
+colette debug hook-log [--project <name>] [--clear]
+```
+
+Displays the log of hook scripts (onstart, onstop, oncreate, …) that exited with a
+non-zero status. Entries are stored in `~/.config/colette/hook-failures.json`
+(last 200 kept).
+
+```bash
+# Show all failures
+colette debug hook-log
+
+# Show failures for a specific project
+colette debug hook-log --project my-project
+
+# Clear the log
+colette debug hook-log --clear
+```
+
+In the TUI, the same log is accessible under **Debug → Hook log** in the main menu.
+
+---
+
 ## Hook System
 
 Hooks are shell scripts stored in `~/.config/colette/templates/<template>/`.

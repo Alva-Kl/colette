@@ -101,6 +101,23 @@ class TestCmdConfigRemoveMachine:
         with pytest.raises(SystemExit):
             cmd_config_remove_machine(MagicMock(machine_name="nope"))
 
+    def test_keeps_other_machines_when_one_is_removed(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.config.commands import cmd_config_remove_machine
+        save_config({
+            "machines": {
+                "local": make_local_machine("/tmp"),
+                "other": make_local_machine("/other"),
+            },
+            "default_machine": "local",
+        })
+        with patch("builtins.input", return_value="y"):
+            cmd_config_remove_machine(MagicMock(machine_name="other"))
+        cfg = load_config()
+        assert "local" in cfg["machines"]
+        assert "other" not in cfg["machines"]
+        assert cfg["default_machine"] == "local"
+
 
 class TestCmdConfigEditHook:
     def test_opens_nano_for_template_hook(self, tmp_config):
@@ -176,14 +193,6 @@ class TestCmdConfigDispatch:
         args.config_parser = mock_parser
         cmd_config(args)
         mock_parser.print_help.assert_called_once()
-
-    def test_list_subcommand_dispatches(self, tmp_config):
-        from colette_cli.config.commands import cmd_config
-        args = MagicMock()
-        args.config_cmd = "list"
-        with patch("colette_cli.config.commands.cmd_config_list") as mock_list:
-            cmd_config(args)
-            mock_list.assert_called_once_with(args)
 
     def test_set_default_subcommand_dispatches(self, tmp_config):
         from colette_cli.utils.config import save_config

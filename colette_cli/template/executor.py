@@ -4,8 +4,10 @@ import base64
 import os
 import shlex
 import subprocess
+from datetime import datetime, timezone
 
 from colette_cli.utils.config import (
+    append_hook_failure,
     get_template_hook_path,
     read_project_hook,
     read_template_hook,
@@ -68,11 +70,13 @@ def _hook_environment(
     return env
 
 
-def _prepend_coletterc(project_name, template_name, command):
+def _prepend_coletterc(project_name, template_name, command, hook_super_path=None):
     """Prepend coletterc sourcing to a hook command.
 
     When a project-level coletterc is active, SUPER is set to the template
     coletterc path before the content runs, enabling `source $SUPER`.
+    If hook_super_path is provided it is restored after coletterc runs so that
+    the following hook script sees the correct $SUPER value.
     Returns the unmodified command if no effective coletterc is found.
     """
     coletterc, super_path = _resolve_hook_with_super(
@@ -84,6 +88,8 @@ def _prepend_coletterc(project_name, template_name, command):
     if super_path:
         prefix_lines.append(f"SUPER={shlex.quote(str(super_path))}")
     prefix_lines.append(coletterc.strip())
+    if hook_super_path:
+        prefix_lines.append(f"SUPER={shlex.quote(str(hook_super_path))}")
     return "\n".join(prefix_lines) + "\n" + command
 
 
@@ -133,7 +139,7 @@ def run_template_hook(
     if command is None:
         return True
 
-    command = _prepend_coletterc(project["name"], template_name, command)
+    command = _prepend_coletterc(project["name"], template_name, command, hook_super_path=super_path)
 
     env = _hook_environment(
         project, machine_name, template_name, machine, template_metadata, super_path
@@ -152,25 +158,35 @@ def run_template_hook(
             ["bash", "-lc", command],
             cwd=project["path"],
             env=env,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            start_new_session=True,
         )
 
     if result.returncode == 0:
         return True
 
-    details = (
-        result.stderr.strip()
-        or result.stdout.strip()
-        or f"exit code {result.returncode}"
-    )
+    stderr = result.stderr.strip()
+    stdout = result.stdout.strip()
+    details = stderr or stdout or f"exit code {result.returncode}"
+    output = "\n".join(filter(None, [stderr, stdout])) or f"exit code {result.returncode}"
     message = (
         f"template hook '{hook_name}' failed for project '{project['name']}' "
         f"({template_name}): {details}"
     )
+    append_hook_failure({
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "project": project["name"],
+        "template": template_name or "",
+        "hook": hook_name,
+        "exit_code": result.returncode,
+        "output": output,
+    })
     if fail_on_error:
         err(message)
-    warn(message)
+    else:
+        warn(message)
     return False
 
 
@@ -187,7 +203,7 @@ def build_hook_command(project, machine_name, template_metadata, machine, hook_n
     if command is None:
         return None
 
-    command = _prepend_coletterc(project["name"], template_name, command)
+    command = _prepend_coletterc(project["name"], template_name, command, hook_super_path=super_path)
 
     env = _hook_environment(
         project, machine_name, template_name, machine, template_metadata, super_path
