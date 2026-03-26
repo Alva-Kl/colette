@@ -24,8 +24,6 @@ def _has_effective_script(content):
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        if stripped == "#!/usr/bin/env bash":
-            continue
         lines.append(stripped)
     return bool(lines)
 

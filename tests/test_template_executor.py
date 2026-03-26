@@ -23,6 +23,9 @@ class TestHasEffectiveScript:
     def test_only_comments_returns_false(self):
         assert not self._call("#!/usr/bin/env bash\n# just a comment\n")
 
+    def test_set_euo_pipefail_returns_true(self):
+        assert self._call("#!/usr/bin/env bash\nset -euo pipefail\n")
+
     def test_real_command_returns_true(self):
         assert self._call("#!/usr/bin/env bash\necho hello\n")
 

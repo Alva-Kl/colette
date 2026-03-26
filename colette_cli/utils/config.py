@@ -200,6 +200,7 @@ def scaffold_project_hook_files(project_name):
             if hook_name == "coletterc":
                 content = (
                     _HOOK_VAR_DOCS
+                    + 'source "$SUPER"\n\n'
                     + f"# Colette sources this file when it creates a tmux session for\n"
                     f"# project '{project_name}'.\n"
                 )
@@ -208,6 +209,7 @@ def scaffold_project_hook_files(project_name):
                     "#!/usr/bin/env bash\n"
                     "set -euo pipefail\n\n"
                     + _HOOK_VAR_DOCS
+                    + 'source "$SUPER"\n\n'
                     + f"# Colette runs this hook for project '{project_name}' during {hook_name}.\n"
                 )
             write_project_hook(project_name, hook_name, content)
