@@ -76,6 +76,41 @@ def _suspend_with_pause(fn):
     return wrapper
 
 
+def _popup(fn):
+    """Return a wrapper that captures stdout/stderr from fn and shows it in a popup overlay.
+
+    Use for commands that only print text (start, stop, create, delete).
+    For interactive terminal takeovers (tmux, editor), use _suspend instead.
+    Catches SystemExit so a failing command never crashes the TUI.
+    """
+    import io
+    import sys
+
+    def wrapper(*args, **kwargs):
+        from .forms import show_output, show_running
+        show_running()
+        buf = io.StringIO()
+        try:
+            old_out, old_err = sys.stdout, sys.stderr
+            sys.stdout = sys.stderr = buf
+            try:
+                fn(*args, **kwargs)
+            except SystemExit:
+                pass
+            finally:
+                sys.stdout, sys.stderr = old_out, old_err
+        except Exception:
+            sys.stdout, sys.stderr = old_out, old_err
+        import re
+        captured = buf.getvalue().strip()
+        # Strip ANSI escape sequences so curses doesn't render them literally
+        captured = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", captured)
+        if captured:
+            show_output(captured)
+
+    return wrapper
+
+
 def _open_nano(path):
     subprocess.run(["nano", str(path)])
 
@@ -373,7 +408,7 @@ def _create_project_interactive():
 
     from colette_cli.project import cmd_create
     args = Namespace(name=name, machine=machine, template=template)
-    _suspend_with_pause(cmd_create)(args)
+    _popup(cmd_create)(args)
 
 
 def _link_directory_interactive():
@@ -400,11 +435,11 @@ def project_list_items():
 
     def _start_all():
         from colette_cli.session import cmd_start
-        _suspend_with_pause(cmd_start)(Namespace(machine=None, projects=[]))
+        _popup(cmd_start)(Namespace(machine=None, projects=[]))
 
     def _stop_all():
         from colette_cli.session import cmd_stop
-        _suspend_with_pause(cmd_stop)(Namespace(machine=None, projects=[]))
+        _popup(cmd_stop)(Namespace(machine=None, projects=[]))
 
     items = []
 
@@ -431,11 +466,11 @@ def project_list_items():
 
             def _start_machine(mn=machine_name):
                 from colette_cli.session import cmd_start
-                _suspend_with_pause(cmd_start)(Namespace(machine=mn, projects=[]))
+                _popup(cmd_start)(Namespace(machine=mn, projects=[]))
 
             def _stop_machine(mn=machine_name):
                 from colette_cli.session import cmd_stop
-                _suspend_with_pause(cmd_stop)(Namespace(machine=mn, projects=[]))
+                _popup(cmd_stop)(Namespace(machine=mn, projects=[]))
 
             items.append(MenuItem(f"Start All — {machine_name}", action=_start_machine))
             items.append(MenuItem(f"Stop All — {machine_name}", action=_stop_machine))
@@ -487,11 +522,11 @@ def project_action_items(project):
 
     def _start():
         from colette_cli.session import cmd_start
-        _suspend_with_pause(cmd_start)(Namespace(machine=None, projects=[name]))
+        _popup(cmd_start)(Namespace(machine=None, projects=[name]))
 
     def _stop():
         from colette_cli.session import cmd_stop
-        _suspend_with_pause(cmd_stop)(Namespace(machine=None, projects=[name]))
+        _popup(cmd_stop)(Namespace(machine=None, projects=[name]))
 
     def _open_code():
         if is_remote:
@@ -521,7 +556,7 @@ def project_action_items(project):
             expected=name,
         ):
             return
-        _suspend_with_pause(lambda: cmd_delete(Namespace(name=name), skip_confirmation=True))()
+        _popup(lambda: cmd_delete(Namespace(name=name), skip_confirmation=True))()
 
     return [
         MenuItem("Open session", action=_suspend(_open_session)),
@@ -591,7 +626,7 @@ def template_action_items(template_name):
             template=template_name,
         )
         from colette_cli.project import cmd_create
-        _suspend_with_pause(cmd_create)(args)
+        _popup(cmd_create)(args)
 
     return [
         MenuItem("Create project", action=_create_project),

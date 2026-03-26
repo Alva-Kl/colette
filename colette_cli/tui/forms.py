@@ -62,6 +62,27 @@ def _restore() -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
+def show_running(message: str = "Running…") -> None:
+    """Draw a brief 'Running…' indicator and refresh the screen immediately.
+
+    Call this just before a blocking operation so the user sees feedback.
+    The overlay is automatically overwritten by the next screen redraw or
+    show_output() call.
+    """
+    scr = state.stdscr
+    if scr is None:
+        return
+    label = f"  {message}  "
+    box_w = len(label) + 2
+    win = _center_win(3, box_w)
+    try:
+        _draw_box(win)
+        win.addstr(1, 1, label, curses.A_BOLD)
+        win.refresh()
+    except curses.error:
+        pass
+
+
 def ask(prompt: str, default: str = "") -> "str | None":
     """Show a text-input overlay.
 
@@ -296,5 +317,76 @@ def type_to_confirm(message: str, expected: str) -> bool:
                 cur += 1
     finally:
         curses.curs_set(0)
+        del win
+        _restore()
+
+
+def show_output(text: str, title: str = "Output") -> None:
+    """Display captured text output in a scrollable read-only overlay.
+
+    Dismissed with Enter, q, ESC, or ← (left arrow).
+    Falls back to printing the text directly when not inside curses.
+    """
+    scr = state.stdscr
+    if scr is None:
+        print(text)
+        return
+
+    lines = text.splitlines() or ["(no output)"]
+    sh, sw = scr.getmaxyx()
+    box_h = max(6, min(sh - 4, len(lines) + 4))
+    box_w = max(40, min(sw - 4, max((len(l) for l in lines), default=20) + 4))
+
+    if box_h > sh - 2 or box_w > sw - 2:
+        curses.endwin()
+        print(text)
+        input("\nPress Enter to continue…")
+        curses.doupdate()
+        return
+
+    win = _center_win(box_h, box_w)
+    win.keypad(True)
+    inner_h = box_h - 2  # rows available for content
+    inner_w = box_w - 4
+    top = 0  # scroll offset
+
+    try:
+        while True:
+            win.erase()
+            _draw_box(win, title)
+            visible = lines[top: top + inner_h]
+            for i, line in enumerate(visible):
+                try:
+                    win.addstr(i + 1, 2, line[:inner_w].ljust(inner_w))
+                except curses.error:
+                    pass
+            # Scroll hint in bottom border
+            hint_parts = []
+            if top > 0:
+                hint_parts.append("↑")
+            if top + inner_h < len(lines):
+                hint_parts.append("↓")
+            hint_parts.append("q/Enter: close")
+            hint = "  ".join(hint_parts)
+            try:
+                win.addstr(box_h - 1, 2, hint[:box_w - 4], _HINT_STYLE)
+            except curses.error:
+                pass
+            win.refresh()
+
+            key = win.getch()
+            if key in (ord("q"), ord("Q"), 27, curses.KEY_ENTER, ord("\n"), ord("\r"), curses.KEY_LEFT):
+                return
+            elif key in (curses.KEY_DOWN, ord("j")):
+                if top + inner_h < len(lines):
+                    top += 1
+            elif key in (curses.KEY_UP, ord("k")):
+                if top > 0:
+                    top -= 1
+            elif key == curses.KEY_NPAGE:
+                top = min(top + inner_h, max(0, len(lines) - inner_h))
+            elif key == curses.KEY_PPAGE:
+                top = max(0, top - inner_h)
+    finally:
         del win
         _restore()

@@ -77,6 +77,39 @@ class TestSuspendHelpers:
         assert called == [True]
         mock_input.assert_not_called()
 
+    def test_popup_shows_running_then_output(self):
+        """_popup must call show_running before the command, then show_output."""
+        from colette_cli.tui.screens import _popup
+        call_order = []
+
+        def cmd():
+            call_order.append("cmd")
+            print("done")
+
+        wrapped = _popup(cmd)
+        with patch("colette_cli.tui.forms.show_running", side_effect=lambda *a, **k: call_order.append("running")) as mr, \
+             patch("colette_cli.tui.forms.show_output") as mo:
+            wrapped()
+
+        assert call_order == ["running", "cmd"]
+        mo.assert_called_once()
+        assert "done" in mo.call_args[0][0]
+
+    def test_popup_strips_ansi(self):
+        """_popup must strip ANSI escape codes before calling show_output."""
+        from colette_cli.tui.screens import _popup
+
+        def cmd():
+            print("\x1b[1mBold\x1b[0m text")
+
+        wrapped = _popup(cmd)
+        with patch("colette_cli.tui.forms.show_running"), \
+             patch("colette_cli.tui.forms.show_output") as mo:
+            wrapped()
+
+        assert "\x1b" not in mo.call_args[0][0]
+        assert "Bold text" in mo.call_args[0][0]
+
 class TestProjectListItems:
     def test_global_actions_always_present(self, tmp_config):
         from colette_cli.tui.screens import project_list_items
