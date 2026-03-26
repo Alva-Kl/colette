@@ -1,5 +1,7 @@
 """Utility functions for project grouping and filtering."""
 
+from pathlib import Path
+
 
 def build_projects_by_machine(projects, filter_machine=None):
     """Group projects by machine, optionally filtered by machine name."""
@@ -23,3 +25,14 @@ def filter_projects_by_name(projects, selected_names):
 def is_remote_machine(machine):
     """Return True if the machine is a remote SSH machine."""
     return bool(machine and machine.get("type") == "ssh")
+
+
+def detect_project_from_cwd():
+    """Return the project name whose path matches the current working directory, or None."""
+    from colette_cli.utils.config import load_projects
+    cwd = Path.cwd().resolve()
+    for project in load_projects():
+        project_path = Path(project["path"]).expanduser().resolve()
+        if project_path == cwd:
+            return project["name"]
+    return None

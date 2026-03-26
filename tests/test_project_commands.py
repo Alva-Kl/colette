@@ -237,3 +237,196 @@ class TestCmdCreate:
         assert marker.read_text().strip() == "oncreate"
         projects = load_projects()
         assert any(p["name"] == "my-project" for p in projects)
+
+
+class TestCmdCopilot:
+    def test_copilot_local_no_existing_session_shows_picker(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.project.commands import cmd_copilot
+
+        project_path = str(tmp_path / "my-project")
+        cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
+        save_config(cfg)
+        save_projects([make_project("my-project", path=project_path)])
+
+        args = MagicMock()
+        args.name = "my-project"
+
+        # No existing copilot session → should call local_tmux_session with picker command
+        with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
+             patch("colette_cli.project.commands.local_tmux_session") as mock_tmux:
+            cmd_copilot(args)
+
+        mock_tmux.assert_called_once()
+        call_args = mock_tmux.call_args
+        assert call_args[0][0] == "my-project-copilot"
+        assert call_args[0][1] == project_path
+        # picker command references the session history file
+        assert ".github/copilot-sessions" in call_args[0][2]
+
+    def test_copilot_local_existing_session_attaches(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.project.commands import cmd_copilot
+
+        project_path = str(tmp_path / "my-project")
+        cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
+        save_config(cfg)
+        save_projects([make_project("my-project", path=project_path)])
+
+        args = MagicMock()
+        args.name = "my-project"
+
+        # Existing copilot session → should just attach (exec bash command)
+        with patch("colette_cli.project.commands.get_sessions", return_value={"my-project-copilot"}), \
+             patch("colette_cli.project.commands.local_tmux_session") as mock_tmux:
+            cmd_copilot(args)
+
+        mock_tmux.assert_called_once()
+        call_args = mock_tmux.call_args
+        assert call_args[0][0] == "my-project-copilot"
+        assert call_args[0][2] == "exec bash"
+
+    def test_copilot_session_name_is_project_copilot(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.project.commands import cmd_copilot
+
+        project_path = str(tmp_path / "alpha")
+        cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
+        save_config(cfg)
+        save_projects([make_project("alpha", path=project_path)])
+
+        args = MagicMock()
+        args.name = "alpha"
+
+        with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
+             patch("colette_cli.project.commands.local_tmux_session") as mock_tmux:
+            cmd_copilot(args)
+
+        session_name = mock_tmux.call_args[0][0]
+        assert session_name == "alpha-copilot"
+
+    def test_copilot_remote_machine_uses_ssh(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.project.commands import cmd_copilot
+
+        cfg = {
+            "machines": {
+                "remote": {"type": "ssh", "host": "server", "projects_dir": "/home/user"}
+            },
+            "default_machine": "remote",
+        }
+        save_config(cfg)
+        save_projects([make_project("my-project", machine="remote", path="/home/user/my-project")])
+
+        args = MagicMock()
+        args.name = "my-project"
+
+        with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
+             patch("colette_cli.project.commands.ssh_interactive") as mock_ssh:
+            cmd_copilot(args)
+
+        mock_ssh.assert_called_once()
+        # Should launch a tmux session on the remote with the picker command
+        tmux_cmd = mock_ssh.call_args[0][1]
+        assert "my-project-copilot" in tmux_cmd
+        assert "/home/user/my-project" in tmux_cmd
+
+    def test_build_copilot_picker_command_includes_picker_and_tracking(self):
+        from colette_cli.project.commands import _build_copilot_picker_command
+        from pathlib import Path
+
+        cmd = _build_copilot_picker_command("/home/user/proj", Path("/home/user/proj/.github/copilot-sessions"))
+        # Uses copilot's native interactive resume TUI when history exists
+        assert "--resume" in cmd
+        assert "copilot-sessions" in cmd
+        assert "inuse" in cmd
+        # Records new sessions after exit
+        assert "cwd" in cmd
+
+    def test_copilot_missing_project_exits(self, tmp_config):
+        from colette_cli.project.commands import cmd_copilot
+
+        args = MagicMock()
+        args.name = "no-such-project"
+
+        with pytest.raises(SystemExit):
+            cmd_copilot(args)
+
+
+class TestCwdAutoDetect:
+    """Integration tests: commands auto-detect project name from cwd."""
+
+    def _setup(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_projects
+        project_path = tmp_path / "my-project"
+        project_path.mkdir()
+        cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
+        save_config(cfg)
+        save_projects([make_project("my-project", path=str(project_path))])
+        return project_path
+
+    def test_attach_resolves_from_cwd(self, tmp_config, tmp_path):
+        from colette_cli.project.commands import cmd_attach
+        import os
+        project_path = self._setup(tmp_config, tmp_path)
+        args = MagicMock()
+        args.name = "my-project"
+        orig = os.getcwd()
+        try:
+            os.chdir(str(project_path))
+            with patch("colette_cli.project.commands.local_tmux_session"):
+                cmd_attach(args)
+        finally:
+            os.chdir(orig)
+
+    def test_code_resolves_from_cwd(self, tmp_config, tmp_path):
+        from colette_cli.project.commands import cmd_code
+        import os
+        project_path = self._setup(tmp_config, tmp_path)
+        args = MagicMock()
+        args.name = "my-project"
+        orig = os.getcwd()
+        try:
+            os.chdir(str(project_path))
+            with patch("subprocess.run"):
+                cmd_code(args)
+        finally:
+            os.chdir(orig)
+
+    def test_main_resolves_name_from_cwd(self, tmp_config, tmp_path):
+        """main() sets args.name from cwd when command is run without a name."""
+        import os, sys
+        from colette_cli.utils.config import save_config, save_projects
+        project_path = tmp_path / "proj"
+        project_path.mkdir()
+        cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
+        save_config(cfg)
+        save_projects([make_project("proj", path=str(project_path))])
+
+        orig = os.getcwd()
+        try:
+            os.chdir(str(project_path))
+            with patch.object(sys, "argv", ["colette", "code"]), \
+                 patch("colette_cli.main.cmd_code") as mock_code:
+                from colette_cli.main import main
+                main()
+        finally:
+            os.chdir(orig)
+
+        mock_code.assert_called_once()
+        resolved_args = mock_code.call_args[0][0]
+        assert resolved_args.name == "proj"
+
+    def test_main_prints_help_when_no_cwd_match(self, tmp_config, tmp_path):
+        """main() prints subcommand help and exits 0 when cwd is not a project."""
+        import os, sys
+        orig = os.getcwd()
+        try:
+            os.chdir(str(tmp_path))
+            with patch.object(sys, "argv", ["colette", "code"]):
+                from colette_cli.main import main
+                with pytest.raises(SystemExit) as exc:
+                    main()
+        finally:
+            os.chdir(orig)
+        assert exc.value.code == 0

@@ -40,13 +40,19 @@ from .menu import MenuItem
 
 
 def _suspend(fn):
-    """Return a wrapper that suspends curses, runs fn, then resumes."""
+    """Return a wrapper that suspends curses, runs fn, then resumes.
+
+    Catches SystemExit (raised by err()) so a failing command never crashes
+    the TUI — the user sees the error and presses Enter to return.
+    """
     import curses
 
     def wrapper(*args, **kwargs):
         curses.endwin()
         try:
             fn(*args, **kwargs)
+        except SystemExit:
+            input("\nPress Enter to continue…")
         finally:
             curses.doupdate()
 
@@ -61,6 +67,8 @@ def _suspend_with_pause(fn):
         curses.endwin()
         try:
             fn(*args, **kwargs)
+            input("\nPress Enter to continue…")
+        except SystemExit:
             input("\nPress Enter to continue…")
         finally:
             curses.doupdate()
@@ -325,16 +333,23 @@ def _unlink_interactive(name, project):
 # ---------------------------------------------------------------------------
 
 def main_menu_items():
-    def _run_monitor():
+    def _run_monitor(copilot=False, all=False):
         from colette_cli.session import cmd_monitor
-        cmd_monitor(Namespace(machine=None, projects=[]))
+        cmd_monitor(Namespace(machine=None, projects=[], copilot=copilot, all=all))
+
+    def _monitor_items():
+        return [
+            MenuItem("Standard", action=_suspend(lambda: _run_monitor())),
+            MenuItem("Copilot", action=_suspend(lambda: _run_monitor(copilot=True))),
+            MenuItem("All", action=_suspend(lambda: _run_monitor(all=True))),
+        ]
 
     return [
         MenuItem("Projects", children=project_list_items),
         MenuItem("Templates", children=template_list_items),
         MenuItem("Config", children=config_menu_items),
         MenuItem("Debug", children=debug_menu_items),
-        MenuItem("Monitor", action=_suspend(_run_monitor)),
+        MenuItem("Monitor", children=_monitor_items),
     ]
 
 
@@ -486,9 +501,18 @@ def project_action_items(project):
         else:
             subprocess.Popen(["code", str(Path(project["path"]).expanduser())])
 
+    def _open_copilot():
+        from colette_cli.project.commands import _open_copilot_session
+        project_path = project["path"] if is_remote else str(Path(project["path"]).expanduser())
+        _open_copilot_session(name, project_path, machine=machine, is_remote=is_remote)
+
     def _open_logs():
         from colette_cli.session import cmd_logs
         cmd_logs(Namespace(name=name, machine=None))
+
+    def _monitor_all():
+        from colette_cli.session import cmd_monitor
+        cmd_monitor(Namespace(machine=None, projects=[name], copilot=False, all=True))
 
     def _delete():
         from .forms import type_to_confirm
@@ -502,7 +526,9 @@ def project_action_items(project):
     return [
         MenuItem("Open session", action=_suspend(_open_session)),
         MenuItem("Code", action=_open_code),
+        MenuItem("Copilot", action=_suspend(_open_copilot)),
         MenuItem("Logs", action=_suspend(_open_logs)),
+        MenuItem("Monitor", action=_suspend(_monitor_all)),
         MenuItem("Start", action=_start),
         MenuItem("Stop", action=_stop),
         MenuItem("Edit hooks", children=lambda: project_hook_items(project)),

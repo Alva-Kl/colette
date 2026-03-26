@@ -364,16 +364,28 @@ colette tui
 ### `colette monitor` — watch multiple sessions
 
 ```
-colette monitor [-m <machine>] [<projects>...]
+colette monitor [-m <machine>] [--copilot | --all] [<projects>...]
 ```
 
 Open a tmux window with read-only panes attached to each project session.
 Only projects with an already-running tmux session are shown; idle projects
 are skipped.
 
+| Flag | Behaviour |
+|------|-----------|
+| *(none)* | Standard `<project>` sessions |
+| `--copilot` | `<project>-copilot` sessions (local machines only) |
+| `--all` | All active sessions (standard + copilot + logs) with **one row per project** |
+
+With `--all`, each project occupies a horizontal band in the monitor window.
+Sessions for the same project (standard, copilot, logs) appear as side-by-side
+panes within that band.
+
 ```bash
 colette monitor
 colette monitor -m local project-a project-b
+colette monitor --copilot
+colette monitor --all
 ```
 
 ---
@@ -406,6 +418,29 @@ Open the project in VS Code. Uses the Remote SSH extension for remote machines.
 
 ```bash
 colette code my-project
+```
+
+---
+
+### `colette copilot` — open in GitHub Copilot
+
+```
+colette copilot <name>
+```
+
+Open the project in GitHub Copilot inside a dedicated tmux session named
+`<project>-copilot`. Works for both local and remote machines (the `copilot`
+CLI must be installed on the remote machine).
+
+**Behaviour:**
+- If the `<project>-copilot` tmux session is already running, colette switches
+  to it (no new Copilot instance is launched).
+- Otherwise, a numbered picker lists known previous Copilot sessions for the
+  project (read from `.github/copilot-sessions`). You can resume any closed
+  session or start a new one. New session IDs are recorded automatically.
+
+```bash
+colette copilot my-project
 ```
 
 ---

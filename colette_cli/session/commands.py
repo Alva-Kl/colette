@@ -24,6 +24,7 @@ from colette_cli.utils.helpers import build_projects_by_machine, filter_projects
 from colette_cli.utils.ssh import ssh_interactive, ssh_run
 from colette_cli.utils.tmux import (
     create_tmux_window_with_panes,
+    create_tmux_window_with_rows,
     ensure_session,
     get_sessions,
     local_tmux_session,
@@ -122,13 +123,15 @@ def cmd_stop(args):
                 fail_on_error=False,
             )
             if is_remote:
-                ssh_run(machine, f"tmux kill-session -t {name} 2>/dev/null")
+                for session in [name, f"{name}-copilot", f"{name}-logs"]:
+                    ssh_run(machine, f"tmux kill-session -t {shlex.quote(session)} 2>/dev/null")
             else:
-                subprocess.run(
-                    ["tmux", "kill-session", "-t", name],
-                    capture_output=True,
-                    stdin=subprocess.DEVNULL,
-                )
+                for session in [name, f"{name}-copilot", f"{name}-logs"]:
+                    subprocess.run(
+                        ["tmux", "kill-session", "-t", session],
+                        capture_output=True,
+                        stdin=subprocess.DEVNULL,
+                    )
             info(f"Stopped session for '{name}'")
 
     print()
@@ -164,6 +167,8 @@ def cmd_monitor(args):
 
     filter_machine = getattr(args, "machine", None)
     filter_projects = getattr(args, "projects", None) or []
+    mode_copilot = getattr(args, "copilot", False)
+    mode_all = getattr(args, "all", False)
 
     by_machine = build_projects_by_machine(projects, filter_machine)
 
@@ -176,18 +181,26 @@ def cmd_monitor(args):
         else:
             err("no projects found. Create one with: colette create <name>")
 
-    active = []
-
     def monitor_attach_wrapper(command):
         return f'bash -lc "until env -u TMUX {command}; do sleep 0.2; done"'
 
+    if mode_all:
+        _cmd_monitor_all(by_machine, cfg, filter_projects, monitor_attach_wrapper)
+    elif mode_copilot:
+        _cmd_monitor_copilot(by_machine, cfg, filter_projects, monitor_attach_wrapper)
+    else:
+        _cmd_monitor_standard(by_machine, cfg, filter_projects, monitor_attach_wrapper)
+
+
+def _cmd_monitor_standard(by_machine, cfg, filter_projects, wrap):
+    """Monitor mode: standard <project> sessions."""
+    active = []
     for machine_name, machine_projects in sorted(by_machine.items()):
         machine_projects = filter_projects_by_name(machine_projects, filter_projects)
         if not machine_projects:
             continue
         machine = get_machine(cfg, machine_name)
         is_remote = is_remote_machine(machine)
-
         sessions = get_sessions(machine, is_remote)
         for project in sorted(machine_projects, key=lambda x: x["name"]):
             if project["name"] not in sessions:
@@ -198,12 +211,79 @@ def cmd_monitor(args):
                 command = f"ssh -t {key_flag}{host} tmux attach-session -t {shlex.quote(project['name'])}"
             else:
                 command = f"tmux attach-session -t {shlex.quote(project['name'])}"
-            active.append((project, monitor_attach_wrapper(command)))
+            active.append((project, wrap(command)))
 
     if not active:
         err("no active sessions to monitor.")
 
     create_tmux_window_with_panes("colette-monitor", active, replace_existing=True)
+
+
+def _cmd_monitor_copilot(by_machine, cfg, filter_projects, wrap):
+    """Monitor mode: <project>-copilot sessions."""
+    active = []
+    for machine_name, machine_projects in sorted(by_machine.items()):
+        machine_projects = filter_projects_by_name(machine_projects, filter_projects)
+        if not machine_projects:
+            continue
+        machine = get_machine(cfg, machine_name)
+        is_remote = is_remote_machine(machine)
+        sessions = get_sessions(machine, is_remote)
+        for project in sorted(machine_projects, key=lambda x: x["name"]):
+            copilot_session = f"{project['name']}-copilot"
+            if copilot_session not in sessions:
+                continue
+            if is_remote:
+                key_flag = f"-i {shlex.quote(machine['ssh_key'])} " if "ssh_key" in machine else ""
+                host = machine.get("host", "")
+                command = f"ssh -t {key_flag}{host} tmux attach-session -t {shlex.quote(copilot_session)}"
+            else:
+                command = f"tmux attach-session -t {shlex.quote(copilot_session)}"
+            active.append((project, wrap(command)))
+
+    if not active:
+        err("no active copilot sessions to monitor.")
+
+    create_tmux_window_with_panes("colette-monitor", active, replace_existing=True)
+
+
+def _cmd_monitor_all(by_machine, cfg, filter_projects, wrap):
+    """Monitor mode: all active sessions per project, one row per project."""
+    project_rows = []
+    for machine_name, machine_projects in sorted(by_machine.items()):
+        machine_projects = filter_projects_by_name(machine_projects, filter_projects)
+        if not machine_projects:
+            continue
+        machine = get_machine(cfg, machine_name)
+        is_remote = is_remote_machine(machine)
+        all_sessions = get_sessions(machine, is_remote)
+
+        def _ssh_cmd(session_name):
+            key_flag = f"-i {shlex.quote(machine['ssh_key'])} " if "ssh_key" in machine else ""
+            host = machine.get("host", "")
+            return f"ssh -t {key_flag}{host} tmux attach-session -t {shlex.quote(session_name)}"
+
+        for project in sorted(machine_projects, key=lambda x: x["name"]):
+            pname = project["name"]
+            row_sessions = []
+
+            for label, session_name in [
+                ("standard", pname),
+                ("copilot", f"{pname}-copilot"),
+                ("logs", f"{pname}-logs"),
+            ]:
+                if session_name not in all_sessions:
+                    continue
+                cmd = _ssh_cmd(session_name) if is_remote else f"tmux attach-session -t {shlex.quote(session_name)}"
+                row_sessions.append((label, wrap(cmd)))
+
+            if row_sessions:
+                project_rows.append((project, row_sessions))
+
+    if not project_rows:
+        err("no active sessions to monitor.")
+
+    create_tmux_window_with_rows("colette-monitor", project_rows, replace_existing=True)
 
 
 def cmd_logs(args):

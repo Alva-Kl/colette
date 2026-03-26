@@ -106,12 +106,12 @@ def build_parser():
     )
 
     dp = sub.add_parser("delete", help="Delete a project and its files")
-    dp.add_argument("name", help="Project name")
+    dp.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
 
     ulp = sub.add_parser(
         "unlink", help="Remove a project from colette without deleting its files"
     )
-    ulp.add_argument("name", help="Project name")
+    ulp.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
 
     sub.add_parser("list", help="List all projects grouped by machine")
 
@@ -133,10 +133,16 @@ def build_parser():
     )
 
     atp = sub.add_parser("attach", help="Attach to or create project tmux session")
-    atp.add_argument("name", help="Project name")
+    atp.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
 
     cop = sub.add_parser("code", help="Open project in VS Code (local or SSH)")
-    cop.add_argument("name", help="Project name")
+    cop.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
+
+    copp = sub.add_parser(
+        "copilot",
+        help="Open project in GitHub Copilot in a dedicated tmux session",
+    )
+    copp.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
 
     monp = sub.add_parser("monitor", help="Monitor project sessions in tmux panes")
     monp.add_argument(
@@ -146,6 +152,22 @@ def build_parser():
         help="Only show sessions from one machine",
     )
     monp.add_argument("projects", nargs="*", help="Optional project names")
+    mon_mode = monp.add_mutually_exclusive_group()
+    mon_mode.add_argument(
+        "--copilot",
+        action="store_true",
+        default=False,
+        help="Monitor active Copilot sessions (<project>-copilot) instead of standard sessions",
+    )
+    mon_mode.add_argument(
+        "--all",
+        action="store_true",
+        default=False,
+        help=(
+            "Monitor all active sessions (standard, copilot, logs) "
+            "with one row per project"
+        ),
+    )
 
     stp = sub.add_parser("start", help="Start tmux sessions for projects")
     stp.add_argument(
@@ -220,4 +242,4 @@ def build_parser():
         help="Clear the hook failure log",
     )
 
-    return parser
+    return parser, sub.choices

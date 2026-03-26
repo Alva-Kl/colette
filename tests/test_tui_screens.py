@@ -29,8 +29,53 @@ def _call_action(item):
 
 
 # ---------------------------------------------------------------------------
-# project_list_items
+# _suspend / _suspend_with_pause error handling
 # ---------------------------------------------------------------------------
+
+class TestSuspendHelpers:
+    def test_suspend_catches_system_exit_and_prompts(self):
+        """_suspend must not let SystemExit escape — shows error and pauses."""
+        from colette_cli.tui.screens import _suspend
+
+        def failing():
+            raise SystemExit(1)
+
+        wrapped = _suspend(failing)
+        with patch("curses.endwin"), patch("curses.doupdate"), \
+             patch("builtins.input") as mock_input:
+            wrapped()  # must not raise
+
+        mock_input.assert_called_once()
+
+    def test_suspend_with_pause_catches_system_exit(self):
+        """_suspend_with_pause must not let SystemExit escape."""
+        from colette_cli.tui.screens import _suspend_with_pause
+
+        def failing():
+            raise SystemExit(1)
+
+        wrapped = _suspend_with_pause(failing)
+        with patch("curses.endwin"), patch("curses.doupdate"), \
+             patch("builtins.input") as mock_input:
+            wrapped()  # must not raise
+
+        mock_input.assert_called_once()
+
+    def test_suspend_normal_action_does_not_prompt(self):
+        """_suspend must NOT add an extra prompt for successful actions."""
+        from colette_cli.tui.screens import _suspend
+        called = []
+
+        def ok():
+            called.append(True)
+
+        wrapped = _suspend(ok)
+        with patch("curses.endwin"), patch("curses.doupdate"), \
+             patch("builtins.input") as mock_input:
+            wrapped()
+
+        assert called == [True]
+        mock_input.assert_not_called()
 
 class TestProjectListItems:
     def test_global_actions_always_present(self, tmp_config):
@@ -172,13 +217,13 @@ class TestProjectActionItems:
     def test_returns_all_expected_actions(self, tmp_config):
         write_config(tmp_config, LOCAL_CFG)
         labels = _item_labels(self._get_items())
-        for expected in ("Open session", "Start", "Stop", "Code", "Logs", "Edit hooks", "Delete", "Unlink"):
+        for expected in ("Open session", "Start", "Stop", "Code", "Copilot", "Logs", "Monitor", "Edit hooks", "Delete", "Unlink"):
             assert expected in labels, f"missing: {expected}"
 
     def test_action_order(self, tmp_config):
         write_config(tmp_config, LOCAL_CFG)
         labels = _item_labels(self._get_items())
-        assert labels == ["Open session", "Code", "Logs", "Start", "Stop", "Edit hooks", "Unlink", "Delete"]
+        assert labels == ["Open session", "Code", "Copilot", "Logs", "Monitor", "Start", "Stop", "Edit hooks", "Unlink", "Delete"]
 
     def test_start_calls_cmd_start_with_project_name(self, tmp_config):
         write_config(tmp_config, LOCAL_CFG)
@@ -721,10 +766,16 @@ class TestMainMenuItems:
         for label in ("Projects", "Templates", "Config", "Monitor"):
             assert label in labels
 
-    def test_monitor_is_leaf(self, tmp_config):
+    def test_monitor_is_submenu(self, tmp_config):
         from colette_cli.tui.screens import main_menu_items
         monitor = next(i for i in main_menu_items() if i.label == "Monitor")
-        assert monitor.is_leaf
+        assert not monitor.is_leaf
+
+    def test_monitor_submenu_has_three_modes(self, tmp_config):
+        from colette_cli.tui.screens import main_menu_items
+        monitor = next(i for i in main_menu_items() if i.label == "Monitor")
+        sub_labels = _item_labels(monitor.get_children())
+        assert sub_labels == ["Standard", "Copilot", "All"]
 
     def test_projects_templates_config_are_submenus(self, tmp_config):
         from colette_cli.tui.screens import main_menu_items

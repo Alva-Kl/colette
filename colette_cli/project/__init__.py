@@ -3,6 +3,7 @@
 from .commands import (
     cmd_attach,
     cmd_code,
+    cmd_copilot,
     cmd_create,
     cmd_delete,
     cmd_link,
@@ -16,6 +17,7 @@ from .commands import (
 __all__ = [
     "cmd_attach",
     "cmd_code",
+    "cmd_copilot",
     "cmd_create",
     "cmd_delete",
     "cmd_link",

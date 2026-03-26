@@ -6,7 +6,8 @@ from colette_cli.cli.parser import build_parser
 
 @pytest.fixture()
 def parser():
-    return build_parser()
+    p, _ = build_parser()
+    return p
 
 
 class TestTopLevelCommands:
