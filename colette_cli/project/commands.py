@@ -257,12 +257,6 @@ def cmd_code(args):
         subprocess.run(["code", str(Path(project["path"]).expanduser())])
 
 
-def cmd_project(args):
-    """Dispatcher for project sub-commands."""
-    if hasattr(args, "project_cmd") and args.project_cmd == "list":
-        cmd_list(args)
-
-
 def cmd_unlink(args):
     """Unlink a project from colette without deleting its files."""
     name = args.name
@@ -279,67 +273,9 @@ def cmd_unlink(args):
     info(f"Project '{name}' unlinked (files not deleted).")
 
 
-def _build_copilot_picker_command(project_path, session_history_file):
-    """Build a bash startup script that launches Copilot with session resume logic.
-
-    Behaviour (mirrors the cop wrapper script):
-    - If the history file has at least one closed session, launch
-      ``copilot --resume`` which opens Copilot's own interactive TUI picker.
-    - If there are no previous sessions (or history is absent), launch a fresh
-      ``copilot`` session.
-    - After exit, record any newly created session IDs to the history file.
-    """
-    hist = shlex.quote(str(session_history_file))
-    path = shlex.quote(project_path)
-    return (
-        'set -euo pipefail\n'
-        'COPILOT_BIN="$(command -v copilot 2>/dev/null || echo copilot)"\n'
-        'SESSION_STATE_DIR="$HOME/.copilot/session-state"\n'
-        f'SESSION_HISTORY_FILE={hist}\n'
-        f'PROJECT_PATH={path}\n'
-        # Check whether there is at least one closed session in history
-        'has_closed_session=false\n'
-        'if [[ -f "$SESSION_HISTORY_FILE" ]]; then\n'
-        '  while IFS= read -r session_id; do\n'
-        '    [[ -z "$session_id" || "$session_id" == "#"* ]] && continue\n'
-        '    session_dir="$SESSION_STATE_DIR/$session_id"\n'
-        '    [[ ! -d "$session_dir" ]] && continue\n'
-        '    ls "$session_dir"/inuse.*.lock &>/dev/null 2>&1 && continue\n'
-        '    has_closed_session=true\n'
-        '    break\n'
-        '  done < "$SESSION_HISTORY_FILE"\n'
-        'fi\n'
-        # Snapshot existing session IDs before launch
-        'before="$(ls "$SESSION_STATE_DIR" 2>/dev/null | sort)"\n'
-        # Launch: use interactive resume picker when history exists, else fresh
-        'if [[ "$has_closed_session" == true ]]; then\n'
-        '  "$COPILOT_BIN" --resume\n'
-        'else\n'
-        '  "$COPILOT_BIN"\n'
-        'fi\n'
-        'exit_code=$?\n'
-        # Record any new session IDs created during this run
-        'after="$(ls "$SESSION_STATE_DIR" 2>/dev/null | sort)"\n'
-        'new_sessions="$(comm -13 <(echo "$before") <(echo "$after") 2>/dev/null || true)"\n'
-        'if [[ -n "$new_sessions" ]]; then\n'
-        '  while IFS= read -r session_id; do\n'
-        '    [[ -z "$session_id" ]] && continue\n'
-        '    session_dir="$SESSION_STATE_DIR/$session_id"\n'
-        "    cwd=\"$(grep '^cwd:' \"$session_dir/workspace.yaml\" 2>/dev/null | awk '{print $2}')\"\n"
-        '    if [[ "$cwd" == "$PROJECT_PATH" ]]; then\n'
-        '      mkdir -p "$(dirname "$SESSION_HISTORY_FILE")"\n'
-        '      echo "$session_id" >> "$SESSION_HISTORY_FILE"\n'
-        '    fi\n'
-        '  done <<< "$new_sessions"\n'
-        'fi\n'
-        'exit $exit_code'
-    )
-
-
 def _open_copilot_session(name, project_path, machine=None, is_remote=False):
-    """Attach to the existing <name>-copilot tmux session, or launch the session picker."""
+    """Attach to the existing <name>-copilot tmux session, or start a new one."""
     tmux_session_name = f"{name}-copilot"
-    session_history_file = Path(project_path) / ".github" / "copilot-sessions"
     sessions = get_sessions(machine or {}, is_remote)
 
     if tmux_session_name in sessions:
@@ -348,15 +284,14 @@ def _open_copilot_session(name, project_path, machine=None, is_remote=False):
         else:
             local_tmux_session(tmux_session_name, project_path, "exec bash")
     else:
-        command = _build_copilot_picker_command(project_path, session_history_file)
         if is_remote:
             tmux_cmd = (
                 f"tmux new-session -A -s {shlex.quote(tmux_session_name)} "
-                f"-c {shlex.quote(project_path)} bash -lc {shlex.quote(command)}"
+                f"-c {shlex.quote(project_path)} copilot"
             )
             ssh_interactive(machine, tmux_cmd)
         else:
-            local_tmux_session(tmux_session_name, project_path, command)
+            local_tmux_session(tmux_session_name, project_path, "copilot")
 
 
 def cmd_copilot(args):

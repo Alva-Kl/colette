@@ -240,7 +240,7 @@ class TestCmdCreate:
 
 
 class TestCmdCopilot:
-    def test_copilot_local_no_existing_session_shows_picker(self, tmp_config, tmp_path):
+    def test_copilot_local_no_existing_session_starts_copilot(self, tmp_config, tmp_path):
         from colette_cli.utils.config import save_config, save_projects
         from colette_cli.project.commands import cmd_copilot
 
@@ -252,7 +252,6 @@ class TestCmdCopilot:
         args = MagicMock()
         args.name = "my-project"
 
-        # No existing copilot session → should call local_tmux_session with picker command
         with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
              patch("colette_cli.project.commands.local_tmux_session") as mock_tmux:
             cmd_copilot(args)
@@ -261,8 +260,7 @@ class TestCmdCopilot:
         call_args = mock_tmux.call_args
         assert call_args[0][0] == "my-project-copilot"
         assert call_args[0][1] == project_path
-        # picker command references the session history file
-        assert ".github/copilot-sessions" in call_args[0][2]
+        assert call_args[0][2] == "copilot"
 
     def test_copilot_local_existing_session_attaches(self, tmp_config, tmp_path):
         from colette_cli.utils.config import save_config, save_projects
@@ -330,18 +328,6 @@ class TestCmdCopilot:
         tmux_cmd = mock_ssh.call_args[0][1]
         assert "my-project-copilot" in tmux_cmd
         assert "/home/user/my-project" in tmux_cmd
-
-    def test_build_copilot_picker_command_includes_picker_and_tracking(self):
-        from colette_cli.project.commands import _build_copilot_picker_command
-        from pathlib import Path
-
-        cmd = _build_copilot_picker_command("/home/user/proj", Path("/home/user/proj/.github/copilot-sessions"))
-        # Uses copilot's native interactive resume TUI when history exists
-        assert "--resume" in cmd
-        assert "copilot-sessions" in cmd
-        assert "inuse" in cmd
-        # Records new sessions after exit
-        assert "cwd" in cmd
 
     def test_copilot_missing_project_exits(self, tmp_config):
         from colette_cli.project.commands import cmd_copilot

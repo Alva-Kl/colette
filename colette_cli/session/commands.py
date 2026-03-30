@@ -413,14 +413,3 @@ def cmd_logs(args):
 
         create_tmux_window_with_panes("colette-logs", active)
 
-
-def cmd_session(args):
-    """Dispatcher for session sub-commands."""
-    if args.session_cmd == "start":
-        cmd_start(args)
-    elif args.session_cmd == "stop":
-        cmd_stop(args)
-    elif args.session_cmd == "monitor":
-        cmd_monitor(args)
-    elif args.session_cmd == "logs":
-        cmd_logs(args)
