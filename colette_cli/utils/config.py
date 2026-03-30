@@ -17,6 +17,7 @@ TEMPLATE_HOOK_FILENAMES = {
     "onstart": ".onstart",
     "onstop": ".onstop",
     "onlogs": ".onlogs",
+    "onupdate": ".onupdate",
     "coletterc": ".coletterc",
 }
 

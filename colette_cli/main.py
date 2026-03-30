@@ -13,7 +13,7 @@ from colette_cli.project import (
     cmd_link,
     cmd_unlink,
 )
-from colette_cli.session import cmd_start, cmd_stop, cmd_monitor, cmd_logs
+from colette_cli.session import cmd_start, cmd_stop, cmd_monitor, cmd_logs, cmd_update
 from colette_cli.debug import cmd_debug
 from colette_cli.tui import cmd_tui
 from colette_cli.utils.helpers import detect_project_from_cwd
@@ -54,6 +54,7 @@ def main():
         "monitor": cmd_monitor,
         "start": cmd_start,
         "stop": cmd_stop,
+        "update": cmd_update,
         "logs": cmd_logs,
         "debug": cmd_debug,
         "tui": cmd_tui,

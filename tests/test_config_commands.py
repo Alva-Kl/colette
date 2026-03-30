@@ -204,3 +204,42 @@ class TestCmdConfigDispatch:
         cmd_config(args)
         from colette_cli.utils.config import load_config
         assert load_config()["default_machine"] == "local"
+
+
+class TestCmdConfigRunTemplateUpdate:
+    def test_runs_onupdate_for_template(self, tmp_config, tmp_path):
+        """cmd_config_run_template_update executes the template onupdate hook."""
+        from colette_cli.utils.config import save_config, write_template_hook
+        from colette_cli.config.commands import cmd_config_run_template_update
+        marker = tmp_path / "marker.txt"
+        write_template_hook("tmpl", "onupdate", f"#!/usr/bin/env bash\necho updated > {marker}")
+        save_config({
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": str(tmp_path),
+                    "templates": [{"name": "tmpl", "type": "directory", "path": str(tmp_path)}],
+                }
+            },
+            "default_machine": "local",
+        })
+        args = MagicMock(template_name="tmpl", machine=None)
+        cmd_config_run_template_update(args)
+        assert marker.exists(), "onupdate hook did not run"
+        assert marker.read_text().strip() == "updated"
+
+    def test_fails_on_unknown_machine(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.config.commands import cmd_config_run_template_update
+        save_config(LOCAL_CFG)
+        args = MagicMock(template_name="tmpl", machine="unknown")
+        with pytest.raises(SystemExit):
+            cmd_config_run_template_update(args)
+
+    def test_dispatches_via_cmd_config(self, tmp_config, tmp_path):
+        from colette_cli.config.commands import cmd_config
+        with patch("colette_cli.config.commands.cmd_config_run_template_update") as mock_fn:
+            args = MagicMock()
+            args.config_cmd = "run-template-update"
+            cmd_config(args)
+        mock_fn.assert_called_once_with(args)

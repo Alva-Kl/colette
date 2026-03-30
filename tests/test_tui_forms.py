@@ -280,3 +280,98 @@ class TestTypeToConfirm:
             result = type_to_confirm("Delete?", expected="my-project")
 
         assert result is False
+
+
+class TestAskChoices:
+    """Tests for ask() with the choices parameter."""
+
+    def test_fallback_returns_first_choice_when_stdscr_none(self, monkeypatch):
+        """When stdscr is None, ask() with choices falls back to stdin."""
+        import colette_cli.tui.state as state
+        state.stdscr = None
+
+        from colette_cli.tui.forms import ask
+        with patch("builtins.input", return_value="2"):
+            result = ask("Pick", choices=["alpha", "beta", "gamma"])
+        assert result == "beta"
+
+    def test_fallback_returns_default_on_invalid_input(self, monkeypatch):
+        """Invalid numeric input falls back to default."""
+        import colette_cli.tui.state as state
+        state.stdscr = None
+
+        from colette_cli.tui.forms import ask
+        with patch("builtins.input", return_value="xyz"):
+            result = ask("Pick", default="beta", choices=["alpha", "beta", "gamma"])
+        assert result == "beta"
+
+    def test_fallback_returns_first_on_no_default_invalid(self, monkeypatch):
+        """Invalid input with no matching default returns first choice."""
+        import colette_cli.tui.state as state
+        state.stdscr = None
+
+        from colette_cli.tui.forms import ask
+        with patch("builtins.input", return_value=""):
+            result = ask("Pick", choices=["alpha", "beta"])
+        assert result == "alpha"
+
+    def test_empty_choices_returns_none(self, monkeypatch):
+        """ask() with empty choices list returns None."""
+        import colette_cli.tui.state as state
+        state.stdscr = None
+
+        from colette_cli.tui.forms import ask
+        result = ask("Pick", choices=[])
+        assert result is None
+
+    def test_curses_enter_selects_current(self):
+        """Pressing Enter selects the highlighted choice."""
+        import colette_cli.tui.state as state
+        scr = _make_stdscr()
+        state.stdscr = scr
+
+        mock_win = MagicMock()
+        mock_win.getch.return_value = ord("\n")
+        mock_win.getmaxyx.return_value = (20, 60)
+
+        from colette_cli.tui.forms import ask
+        with patch("curses.newwin", return_value=mock_win), \
+             patch("colette_cli.tui.forms._restore"):
+            result = ask("Pick", choices=["alpha", "beta", "gamma"])
+
+        assert result == "alpha"  # first item selected by default
+
+    def test_curses_default_preselected(self):
+        """The item matching default is pre-selected."""
+        import colette_cli.tui.state as state
+        scr = _make_stdscr()
+        state.stdscr = scr
+
+        # DOWN then Enter → should select second item when default pre-selects it
+        mock_win = MagicMock()
+        mock_win.getch.return_value = ord("\n")
+        mock_win.getmaxyx.return_value = (20, 60)
+
+        from colette_cli.tui.forms import ask
+        with patch("curses.newwin", return_value=mock_win), \
+             patch("colette_cli.tui.forms._restore"):
+            result = ask("Pick", default="gamma", choices=["alpha", "beta", "gamma"])
+
+        assert result == "gamma"
+
+    def test_curses_esc_returns_none(self):
+        """ESC returns None."""
+        import colette_cli.tui.state as state
+        scr = _make_stdscr()
+        state.stdscr = scr
+
+        mock_win = MagicMock()
+        mock_win.getch.return_value = 27
+        mock_win.getmaxyx.return_value = (20, 60)
+
+        from colette_cli.tui.forms import ask
+        with patch("curses.newwin", return_value=mock_win), \
+             patch("colette_cli.tui.forms._restore"):
+            result = ask("Pick", choices=["alpha", "beta"])
+
+        assert result is None

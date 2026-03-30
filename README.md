@@ -91,6 +91,7 @@ Without an action, prints a summary of the current configuration.
 | `edit-template <machine> <template>` | Edit a template |
 | `edit-hook <template> <hook>` | Edit a template hook script |
 | `edit-project-hook <project> <hook>` | Edit a project-specific hook script |
+| `run-template-update <template>` | Run the onupdate hook for a template |
 | `remove-template <machine> <template>` | Remove a template from a machine |
 | `remove-machine <machine>` | Remove a machine |
 | `set-default <machine>` | Set the default machine |
@@ -155,10 +156,11 @@ it does not exist yet.
 colette config edit-hook my-template oncreate
 colette config edit-hook my-template onstart
 colette config edit-hook my-template onlogs
+colette config edit-hook my-template onupdate
 colette config edit-hook my-template coletterc
 ```
 
-Valid hook names: `oncreate`, `onstart`, `onstop`, `onlogs`, `coletterc`.
+Valid hook names: `oncreate`, `onstart`, `onstop`, `onlogs`, `onupdate`, `coletterc`.
 
 #### `colette config edit-project-hook <project> <hook>`
 
@@ -171,9 +173,22 @@ colette config edit-project-hook my-project onstart
 colette config edit-project-hook my-project onlogs
 ```
 
-Valid hook names: `oncreate`, `onstart`, `onstop`, `onlogs`, `coletterc`.
+Valid hook names: `oncreate`, `onstart`, `onstop`, `onlogs`, `onupdate`, `coletterc`.
 
 Project-level hooks take full precedence over the template hook for that event.
+
+#### `colette config run-template-update <template> [-m <machine>]`
+
+Run the `onupdate` hook directly for a template, without a project context.
+Use this to update the template itself (e.g. pull the latest changes from its
+source repository). The hook receives `COLETTE_TEMPLATE_NAME`,
+`COLETTE_MACHINE_NAME`, `COLETTE_PARAM_*`, and (for directory-type templates)
+`COLETTE_TEMPLATE_PATH`.
+
+```bash
+colette config run-template-update my-template
+colette config run-template-update my-template -m my-server
+```
 
 #### `colette config remove-template <machine> <template>`
 
@@ -390,6 +405,29 @@ colette monitor --all
 
 ---
 
+### `colette update` — run the onupdate hook
+
+```
+colette update [<project> ...] [-m <machine>]
+```
+
+Run the `onupdate` hook for one or more projects. Use this to update projects
+(e.g. pull the latest code, rebuild dependencies).
+
+```bash
+colette update my-project
+colette update                # all projects
+colette update -m my-server   # all projects on a machine
+```
+
+To run `onupdate` directly on a template (without a project), use:
+
+```bash
+colette config run-template-update my-template
+```
+
+---
+
 ### `colette logs` — run the onlogs hook
 
 ```
@@ -491,6 +529,7 @@ They are automatically invoked by Colette at lifecycle events.
 | `onstart` | `.onstart` | After `colette start` | Non-interactive |
 | `onstop` | `.onstop` | Before `colette stop` | Non-interactive |
 | `onlogs` | `.onlogs` | `colette logs` | Interactive (tmux) |
+| `onupdate` | `.onupdate` | `colette update` / `colette config run-template-update` | Non-interactive |
 | `coletterc` | `.coletterc` | Before every hook and on session bootstrap | Sourced (not executed) |
 
 `coletterc` is the base common hook. It is sourced automatically before every
@@ -513,6 +552,10 @@ Every hook receives these environment variables:
 | `COLETTE_MACHINE_NAME` | Machine name |
 | `COLETTE_TEMPLATE_NAME` | Template name (empty if no template) |
 | `COLETTE_PARAM_<KEY>` | Template parameter values |
+
+When `onupdate` is run directly on a template (via `colette config run-template-update`),
+only `COLETTE_TEMPLATE_NAME`, `COLETTE_MACHINE_NAME`, and `COLETTE_PARAM_*` are set.
+For directory-type templates `COLETTE_TEMPLATE_PATH` is also set to the template source path.
 
 ### Project-specific hook overrides
 
@@ -542,6 +585,7 @@ hooks (to avoid self-sourcing).
       .onstart
       .onstop
       .onlogs
+      .onupdate
       .coletterc
   projects/
     my-project/

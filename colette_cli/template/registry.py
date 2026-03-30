@@ -9,7 +9,7 @@ from colette_cli.utils.config import (
 )
 
 
-SCRIPT_KEYS = ("oncreate", "onstart", "onstop", "onlogs", "coletterc")
+SCRIPT_KEYS = ("oncreate", "onstart", "onstop", "onlogs", "onupdate", "coletterc")
 
 _HOOK_VAR_DOCS = """\
 # Available Colette environment variables:

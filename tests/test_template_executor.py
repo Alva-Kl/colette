@@ -596,3 +596,52 @@ class TestPrependColetterrcSuperCollision:
         assert result is True
         assert tmpl_marker.read_text().strip() == "template"
         assert proj_marker.read_text().strip() == "project"
+
+
+class TestSuperRemote:
+    """Verify that $SUPER is inlined (not a local path) when is_remote=True."""
+
+    def test_super_assignment_local_is_path(self, tmp_path):
+        """Local assignment uses the raw path string."""
+        from colette_cli.template.executor import _super_assignment
+        p = tmp_path / "hook.sh"
+        p.write_text("echo hi")
+        result = _super_assignment(p, is_remote=False)
+        assert str(p) in result
+        assert "mktemp" not in result
+
+    def test_super_assignment_remote_uses_tempfile(self, tmp_path):
+        """Remote assignment creates a tempfile and pipes base64-decoded content into it."""
+        from colette_cli.template.executor import _super_assignment
+        p = tmp_path / "hook.sh"
+        p.write_text("echo hello-from-template")
+        result = _super_assignment(p, is_remote=True)
+        assert "mktemp" in result
+        assert "base64 -d" in result
+        # The base64 payload must decode to the original content
+        import base64, re
+        m = re.search(r"printf '%s' '?([A-Za-z0-9+/=]+)'?", result)
+        assert m, f"No base64 payload found in: {result}"
+        decoded = base64.b64decode(m.group(1)).decode()
+        assert decoded == "echo hello-from-template"
+
+    def test_prepend_coletterc_remote_no_local_path(self, tmp_config):
+        """_prepend_coletterc with is_remote=True must not embed local paths."""
+        from colette_cli.utils.config import write_template_hook, write_project_hook
+        from colette_cli.template.executor import _prepend_coletterc
+        write_template_hook("t", "coletterc", "# template rc\nexport FOO=1")
+        write_project_hook("proj", "coletterc", "# project rc\nexport BAR=2")
+        result = _prepend_coletterc("proj", "t", "echo done", is_remote=True)
+        assert "mktemp" in result
+        assert ".config/colette" not in result
+
+    def test_build_project_bootstrap_remote_no_local_path(self, tmp_config):
+        """build_project_bootstrap with is_remote=True must not embed local paths."""
+        from colette_cli.utils.config import write_template_hook, write_project_hook
+        from colette_cli.template.executor import build_project_bootstrap
+        write_template_hook("t", "coletterc", "# template rc\nexport FOO=1")
+        write_project_hook("proj", "coletterc", 'source "$SUPER"\nexport BAR=2')
+        project = {"name": "proj", "path": "/work/proj", "machine": "remote1"}
+        result = build_project_bootstrap(project, "remote1", {"name": "t"}, is_remote=True)
+        # Must not contain the local config path in the bootstrap string
+        assert ".config/colette" not in result

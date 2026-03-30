@@ -83,13 +83,20 @@ def show_running(message: str = "Running…") -> None:
         pass
 
 
-def ask(prompt: str, default: str = "") -> "str | None":
-    """Show a text-input overlay.
+def ask(prompt: str, default: str = "", choices: "list[str] | None" = None) -> "str | None":
+    """Show a text-input or choice-selection overlay.
 
-    Returns the entered string (possibly empty), or ``None`` if the user
-    pressed ESC.  If the user presses Enter on an empty field the *default*
-    value is returned.
+    When *choices* is provided, renders an arrow-key-navigable list.  The
+    initially selected item is the one matching *default* (or the first item).
+    Returns the selected string, or ``None`` if the user pressed ESC.
+
+    Without *choices*, shows a free-form text input.  Returns the entered
+    string (possibly empty), or ``None`` on ESC.  Empty input returns
+    *default*.
     """
+    if choices is not None:
+        return _ask_choices(prompt, choices, default)
+
     scr = state.stdscr
     if scr is None:
         result = input(f"{prompt}: ").strip()
@@ -168,6 +175,112 @@ def ask(prompt: str, default: str = "") -> "str | None":
                 cur += 1
     finally:
         curses.curs_set(0)
+        del win
+        _restore()
+
+
+def _ask_choices(prompt: str, choices: "list[str]", default: str = "") -> "str | None":
+    """Render an arrow-key-navigable selection list overlay.
+
+    Returns the selected string, or ``None`` on ESC / empty list.
+    """
+    if not choices:
+        return None
+
+    scr = state.stdscr
+    if scr is None:
+        for i, c in enumerate(choices):
+            print(f"  {i + 1}. {c}")
+        raw = input(f"{prompt} [1-{len(choices)}]: ").strip()
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(choices):
+                return choices[idx]
+        except ValueError:
+            pass
+        return default if default in choices else choices[0]
+
+    sh, sw = scr.getmaxyx()
+    max_visible = max(3, sh - 8)
+    inner_w = min(
+        max(len(prompt) + 4, max((len(c) for c in choices), default=20) + 4, 30),
+        sw - 6,
+    )
+    box_w = inner_w + 4
+    visible = min(len(choices), max_visible)
+    box_h = visible + 4  # top border + blank row + choices + hint row + bottom border
+
+    if box_h > sh - 2 or box_w > sw - 2:
+        curses.endwin()
+        for i, c in enumerate(choices):
+            print(f"  {i + 1}. {c}")
+        raw = input(f"{prompt} [1-{len(choices)}]: ").strip()
+        curses.doupdate()
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(choices):
+                return choices[idx]
+        except ValueError:
+            pass
+        return default if default in choices else choices[0]
+
+    sel = choices.index(default) if default in choices else 0
+    top = 0
+
+    win = _center_win(box_h, box_w)
+    win.keypad(True)
+
+    try:
+        while True:
+            win.erase()
+            _draw_box(win, prompt)
+
+            if sel < top:
+                top = sel
+            elif sel >= top + visible:
+                top = sel - visible + 1
+
+            for i in range(visible):
+                idx = top + i
+                if idx >= len(choices):
+                    break
+                label = choices[idx][:inner_w].ljust(inner_w)
+                attr = curses.A_REVERSE if idx == sel else curses.A_NORMAL
+                try:
+                    win.addstr(i + 2, 2, label, attr)
+                except curses.error:
+                    pass
+
+            hint_parts = []
+            if top > 0:
+                hint_parts.append("↑")
+            if top + visible < len(choices):
+                hint_parts.append("↓")
+            hint_parts.append("Enter: select  ESC: cancel")
+            hint = "  ".join(hint_parts)
+            try:
+                win.addstr(box_h - 1, 2, hint[:inner_w], _HINT_STYLE)
+            except curses.error:
+                pass
+
+            win.refresh()
+            key = win.getch()
+
+            if key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
+                return choices[sel]
+            elif key == 27:  # ESC
+                return None
+            elif key in (curses.KEY_DOWN, ord("j")):
+                if sel < len(choices) - 1:
+                    sel += 1
+            elif key in (curses.KEY_UP, ord("k")):
+                if sel > 0:
+                    sel -= 1
+            elif key == curses.KEY_NPAGE:
+                sel = min(sel + visible, len(choices) - 1)
+            elif key == curses.KEY_PPAGE:
+                sel = max(0, sel - visible)
+    finally:
         del win
         _restore()
 

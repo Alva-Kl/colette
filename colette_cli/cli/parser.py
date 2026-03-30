@@ -70,7 +70,7 @@ def build_parser():
     ehp.add_argument("template_name", help="Template name")
     ehp.add_argument(
         "hook_name",
-        choices=["oncreate", "onstart", "onstop", "onlogs", "coletterc"],
+        choices=["oncreate", "onstart", "onstop", "onlogs", "onupdate", "coletterc"],
         help="Hook to edit",
     )
     ephp = csub.add_parser(
@@ -79,8 +79,26 @@ def build_parser():
     ephp.add_argument("project_name", help="Project name")
     ephp.add_argument(
         "hook_name",
-        choices=["oncreate", "onstart", "onstop", "onlogs", "coletterc"],
+        choices=["oncreate", "onstart", "onstop", "onlogs", "onupdate", "coletterc"],
         help="Hook to edit",
+    )
+    rtup = csub.add_parser(
+        "run-template-update",
+        help="Run the onupdate hook directly for a template",
+        description=(
+            "Runs the 'onupdate' hook defined for a template without a project context.\n"
+            "Use this to update the template itself (e.g. pull latest changes).\n\n"
+            "The hook file is at:\n"
+            "  ~/.config/colette/templates/<template>/.onupdate"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    rtup.add_argument("template_name", help="Template name")
+    rtup.add_argument(
+        "--machine",
+        "-m",
+        metavar="MACHINE",
+        help="Machine to run the hook on (default: configured default machine)",
     )
     rtp = csub.add_parser("remove-template", help="Remove a template from a machine")
     rtp.add_argument("machine_name", help="Machine name")
@@ -186,6 +204,26 @@ def build_parser():
         help="Only stop sessions for one machine",
     )
     stpp.add_argument("projects", nargs="*", help="Optional project names")
+
+    updp = sub.add_parser(
+        "update",
+        help="Run the 'onupdate' hook for one or many projects",
+        description=(
+            "Runs the 'onupdate' hook defined for each project's template.\n\n"
+            "To enable updates for a template, edit:\n"
+            "  ~/.config/colette/templates/<template>/.onupdate\n\n"
+            "To run onupdate directly on a template (without a project), use:\n"
+            "  colette config run-template-update <template>"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    updp.add_argument(
+        "--machine",
+        "-m",
+        metavar="MACHINE",
+        help="Only update projects on one machine",
+    )
+    updp.add_argument("projects", nargs="*", help="Optional project names")
 
     logsp = sub.add_parser(
         "logs",

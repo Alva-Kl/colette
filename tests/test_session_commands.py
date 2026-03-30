@@ -336,3 +336,50 @@ class TestCmdMonitor:
              patch("colette_cli.session.commands.create_tmux_window_with_rows"):
             with pytest.raises(SystemExit):
                 cmd_monitor(args)
+
+
+# ---------------------------------------------------------------------------
+# TestCmdUpdate
+# ---------------------------------------------------------------------------
+
+class TestCmdUpdate:
+    def test_no_projects_prints_message(self, tmp_config, capsys):
+        from colette_cli.session.commands import cmd_update
+        cmd_update(MagicMock(machine=None, projects=[]))
+        assert "No projects" in capsys.readouterr().out
+
+    def test_calls_onupdate_hook(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.session.commands import cmd_update
+        save_config(LOCAL_CFG)
+        save_projects([make_project("proj", path="/tmp")])
+        args = MagicMock(machine=None, projects=[])
+        with patch("colette_cli.session.commands.run_template_hook", return_value=True) as mock_hook:
+            cmd_update(args)
+        mock_hook.assert_called_once()
+        assert mock_hook.call_args[0][5] == "onupdate"
+
+    def test_onupdate_hook_actually_runs(self, tmp_config, tmp_path):
+        """The onupdate hook executes when cmd_update is called."""
+        from colette_cli.utils.config import save_config, save_projects, write_template_hook
+        from colette_cli.session.commands import cmd_update
+        marker = tmp_path / "marker.txt"
+        write_template_hook("tmpl", "onupdate", f"#!/usr/bin/env bash\necho onupdate > {marker}")
+        save_config({
+            "machines": {"local": make_local_machine(str(tmp_path))},
+            "default_machine": "local",
+        })
+        save_projects([make_project("proj", path=str(tmp_path), template="tmpl")])
+        args = MagicMock(machine=None, projects=[])
+        cmd_update(args)
+        assert marker.exists(), "onupdate hook did not run"
+        assert marker.read_text().strip() == "onupdate"
+
+    def test_filters_by_machine(self, tmp_config, capsys):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.session.commands import cmd_update
+        save_config(LOCAL_CFG)
+        save_projects([make_project("proj", path="/tmp")])
+        args = MagicMock(machine="nonexistent", projects=[])
+        with pytest.raises(SystemExit):
+            cmd_update(args)

@@ -250,13 +250,13 @@ class TestProjectActionItems:
     def test_returns_all_expected_actions(self, tmp_config):
         write_config(tmp_config, LOCAL_CFG)
         labels = _item_labels(self._get_items())
-        for expected in ("Open session", "Start", "Stop", "Code", "Copilot", "Logs", "Monitor", "Edit hooks", "Delete", "Unlink"):
+        for expected in ("Open session", "Start", "Stop", "Update", "Code", "Copilot", "Logs", "Monitor", "Edit hooks", "Delete", "Unlink"):
             assert expected in labels, f"missing: {expected}"
 
     def test_action_order(self, tmp_config):
         write_config(tmp_config, LOCAL_CFG)
         labels = _item_labels(self._get_items())
-        assert labels == ["Open session", "Code", "Copilot", "Logs", "Monitor", "Start", "Stop", "Edit hooks", "Unlink", "Delete"]
+        assert labels == ["Open session", "Code", "Copilot", "Logs", "Monitor", "Start", "Stop", "Update", "Edit hooks", "Unlink", "Delete"]
 
     def test_start_calls_cmd_start_with_project_name(self, tmp_config):
         write_config(tmp_config, LOCAL_CFG)
@@ -330,7 +330,7 @@ class TestTemplateActionItems:
     def test_returns_create_edit_hooks_edit_parameters(self, tmp_config):
         from colette_cli.tui.screens import template_action_items
         labels = _item_labels(template_action_items("my-tmpl"))
-        assert labels == ["Create project", "Edit hooks", "Edit parameters"]
+        assert labels == ["Create project", "Run update", "Edit hooks", "Edit parameters"]
 
     def test_edit_hooks_is_submenu(self, tmp_config):
         from colette_cli.tui.screens import template_action_items

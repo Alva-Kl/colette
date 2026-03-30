@@ -385,6 +385,39 @@ def cmd_config_remove_template(args):
     info(f"Template '{args.template_name}' removed from machine '{args.machine_name}'.")
 
 
+def cmd_config_run_template_update(args):
+    """Run the onupdate hook directly for a template (without a project context)."""
+    from colette_cli.template import run_onupdate_for_template, get_template_metadata
+    from colette_cli.utils.helpers import is_remote_machine
+
+    cfg = load_config()
+    machine_name = getattr(args, "machine", None) or cfg.get("default_machine")
+    if not machine_name:
+        err("no machine specified and no default machine set.")
+    machine = require_machine(cfg, machine_name)
+    is_remote = is_remote_machine(machine)
+
+    template_name = args.template_name
+    templates_cfg = load_templates()
+    template_metadata = get_template_metadata(templates_cfg, template_name)
+
+    from colette_cli.template.registry import get_machine_template
+    template_entry = get_machine_template(machine, template_name)
+    template_path = (template_entry or {}).get("path")
+
+    scaffold_template_hook_files(template_name)
+    run_onupdate_for_template(
+        template_name,
+        machine,
+        machine_name,
+        is_remote,
+        template_metadata,
+        template_path=template_path,
+        fail_on_error=True,
+    )
+    info(f"onupdate ran for template '{template_name}'.")
+
+
 def cmd_config(args):
     """Dispatcher for config sub-commands."""
     if args.config_cmd == "list":
@@ -403,6 +436,8 @@ def cmd_config(args):
         cmd_config_edit_hook(args)
     elif args.config_cmd == "edit-project-hook":
         cmd_config_edit_project_hook(args)
+    elif args.config_cmd == "run-template-update":
+        cmd_config_run_template_update(args)
     elif args.config_cmd == "remove-template":
         cmd_config_remove_template(args)
     elif args.config_cmd == "remove-machine":

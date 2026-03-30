@@ -65,7 +65,7 @@ def cmd_start(args):
                 project,
                 machine,
                 is_remote,
-                build_project_bootstrap(project, machine_name, template_metadata),
+                build_project_bootstrap(project, machine_name, template_metadata, is_remote),
             )
             run_template_hook(
                 project,
@@ -133,6 +133,48 @@ def cmd_stop(args):
                         stdin=subprocess.DEVNULL,
                     )
             info(f"Stopped session for '{name}'")
+
+    print()
+
+
+def cmd_update(args):
+    """Run the onupdate hook for one or more projects."""
+    projects = load_projects()
+    if not projects:
+        print("No projects. Create one with: colette create <name>")
+        return
+
+    filter_machine = getattr(args, "machine", None)
+    filter_names = getattr(args, "projects", None) or []
+    by_machine = build_projects_by_machine(projects, filter_machine)
+
+    if not by_machine:
+        err(f"no projects found for machine '{filter_machine}'.")
+
+    for machine_name, machine_projects in sorted(by_machine.items()):
+        machine_projects = filter_projects_by_name(machine_projects, filter_names)
+        if not machine_projects:
+            continue
+        machine = get_machine(load_config(), machine_name)
+        is_remote = is_remote_machine(machine)
+        templates_cfg = load_templates()
+
+        print(f"\n{bold(f'[{machine_name}]')}")
+
+        for project in sorted(machine_projects, key=lambda x: x["name"]):
+            template_metadata = get_template_metadata(
+                templates_cfg, get_project_template_name(project)
+            )
+            run_template_hook(
+                project,
+                machine,
+                machine_name,
+                is_remote,
+                template_metadata,
+                "onupdate",
+                fail_on_error=False,
+            )
+            info(f"Updated '{project['name']}'")
 
     print()
 

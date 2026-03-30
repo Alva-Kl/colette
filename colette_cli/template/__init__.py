@@ -1,6 +1,6 @@
 """Template system for project lifecycle scripts and configurations."""
 
-from .executor import build_hook_command, build_project_bootstrap, run_template_hook
+from .executor import build_hook_command, build_project_bootstrap, run_template_hook, run_onupdate_for_template
 from .registry import (
     SCRIPT_KEYS,
     get_machine_template,
@@ -25,6 +25,7 @@ __all__ = [
     "list_machine_template_names",
     "normalize_machine_templates",
     "remove_template_metadata",
+    "run_onupdate_for_template",
     "run_template_hook",
     "scaffold_template_hook_files",
     "upsert_template_metadata",

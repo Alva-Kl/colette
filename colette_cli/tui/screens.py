@@ -395,6 +395,7 @@ def main_menu_items():
 def _create_project_interactive():
     """Collect project details via TUI forms and create the project async."""
     from .forms import ask
+    from colette_cli.template.registry import list_machine_template_names
     cfg = load_config()
     machines = list(cfg.get("machines", {}).keys())
     default_machine = cfg.get("default_machine") or (machines[0] if machines else "")
@@ -403,8 +404,14 @@ def _create_project_interactive():
     if not name:
         return
 
-    machine = ask(f"Machine", default=default_machine) or default_machine
-    template = ask("Template (leave empty for none)") or None
+    machine = ask("Machine", default=default_machine, choices=machines or None) or default_machine
+
+    # Load templates available for the selected machine
+    machine_cfg = cfg.get("machines", {}).get(machine, {})
+    template_names = list_machine_template_names(machine_cfg)
+    template_choices = ["(none)"] + template_names
+    raw_template = ask("Template", choices=template_choices)
+    template = raw_template if raw_template and raw_template != "(none)" else None
 
     from colette_cli.project import cmd_create
     args = Namespace(name=name, machine=machine, template=template)
@@ -416,13 +423,14 @@ def _link_directory_interactive():
     from colette_cli.project import cmd_link
     from .forms import ask
     cfg = load_config()
+    machines = list(cfg.get("machines", {}).keys())
     default_machine = cfg.get("default_machine", "")
 
     path = ask("Directory path")
     if not path:
         return
 
-    machine = ask("Machine", default=default_machine) or default_machine
+    machine = ask("Machine", default=default_machine, choices=machines or None) or default_machine
     name = ask("Project name (leave empty for directory name)") or None
 
     cmd_link(Namespace(path=path, machine=machine, name=name))
@@ -503,7 +511,7 @@ def project_action_items(project):
             template_name = get_project_template_name(project)
             template_metadata = get_template_metadata(load_templates(), template_name)
             startup_command = build_project_bootstrap(
-                project, project["machine"], template_metadata
+                project, project["machine"], template_metadata, is_remote=True
             )
             tmux_cmd = (
                 f"tmux new-session -A -s {shlex.quote(name)} "
@@ -515,7 +523,7 @@ def project_action_items(project):
             template_name = get_project_template_name(project)
             template_metadata = get_template_metadata(load_templates(), template_name)
             startup_command = build_project_bootstrap(
-                project, project["machine"], template_metadata
+                project, project["machine"], template_metadata, is_remote=False
             )
             project_path = str(Path(project["path"]).expanduser())
             local_tmux_session(name, project_path, startup_command)
@@ -527,6 +535,10 @@ def project_action_items(project):
     def _stop():
         from colette_cli.session import cmd_stop
         _popup(cmd_stop)(Namespace(machine=None, projects=[name]))
+
+    def _update():
+        from colette_cli.session import cmd_update
+        _popup(cmd_update)(Namespace(machine=None, projects=[name]))
 
     def _open_code():
         if is_remote:
@@ -566,6 +578,7 @@ def project_action_items(project):
         MenuItem("Monitor", action=_suspend(_monitor_all)),
         MenuItem("Start", action=_start),
         MenuItem("Stop", action=_stop),
+        MenuItem("Update", action=_update),
         MenuItem("Edit hooks", children=lambda: project_hook_items(project)),
         MenuItem("Unlink", action=lambda: _unlink_interactive(name, project)),
         MenuItem("Delete", action=_delete),
@@ -628,8 +641,31 @@ def template_action_items(template_name):
         from colette_cli.project import cmd_create
         _popup(cmd_create)(args)
 
+    def _run_update():
+        from colette_cli.template import run_onupdate_for_template, get_template_metadata
+        from colette_cli.template.registry import get_machine_template
+        from colette_cli.utils.helpers import is_remote_machine
+        cfg = load_config()
+        machine_name = cfg.get("default_machine")
+        machine = cfg.get("machines", {}).get(machine_name) or {}
+        is_remote = is_remote_machine(machine)
+        templates_cfg = load_templates()
+        template_metadata = get_template_metadata(templates_cfg, template_name)
+        template_entry = get_machine_template(machine, template_name)
+        template_path = (template_entry or {}).get("path")
+        run_onupdate_for_template(
+            template_name,
+            machine,
+            machine_name,
+            is_remote,
+            template_metadata,
+            template_path=template_path,
+            fail_on_error=False,
+        )
+
     return [
         MenuItem("Create project", action=_create_project),
+        MenuItem("Run update", action=_popup(_run_update)),
         MenuItem("Edit hooks", children=lambda: template_hook_items(template_name)),
         MenuItem("Edit parameters", children=lambda: template_param_items(template_name)),
     ]

@@ -225,7 +225,7 @@ def cmd_attach(args):
     template_name = get_project_template_name(project)
     template_metadata = get_template_metadata(load_templates(), template_name)
     startup_command = build_project_bootstrap(
-        project, project["machine"], template_metadata
+        project, project["machine"], template_metadata, is_remote
     )
 
     tmux_cmd = (
