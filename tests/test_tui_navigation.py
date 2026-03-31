@@ -199,3 +199,23 @@ class TestAppLoop:
         )
         # Startup splash + quit-mode splash both called
         assert mock_splash.call_count == 2
+
+
+class TestNotificationsKey:
+    def _run_menu(self, keys, items=None):
+        import curses
+        from colette_cli.tui.menu import Menu
+        scr = MagicMock()
+        scr.getmaxyx.return_value = (24, 80)
+        scr.getch.side_effect = list(keys)
+        menu_items = items or [_make_leaf("A")]
+        with patch("curses.curs_set"):
+            return Menu(scr, menu_items).run()
+
+    def test_n_returns_notifications_sentinel(self):
+        from colette_cli.tui.menu import NOTIFICATIONS
+        import colette_cli.tui.state as state
+        state.notifications = []
+        state.running_tasks = 0
+        result = self._run_menu([ord("n")])
+        assert result is NOTIFICATIONS

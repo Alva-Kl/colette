@@ -2,12 +2,19 @@
 
 import curses
 
+from . import state
+
 
 class _Quit:
     """Sentinel returned by Menu.run() when the user presses q or Escape."""
 
 
+class _Notifications:
+    """Sentinel returned by Menu.run() when the user presses n."""
+
+
 QUIT = _Quit()
+NOTIFICATIONS = _Notifications()
 
 
 class MenuItem:
@@ -77,17 +84,22 @@ class Menu:
         """Block until the user makes a choice or navigates back.
 
         Returns:
-            MenuItem if the user pressed → / Enter on an item.
-            None     if the user pressed ← (go back).
-            QUIT     if the user pressed q or Escape (exit TUI).
+            MenuItem       if the user pressed → / Enter on an item.
+            None           if the user pressed ← (go back).
+            QUIT           if the user pressed q or Escape (exit TUI).
+            NOTIFICATIONS  if the user pressed n (open notifications screen).
         """
         curses.curs_set(0)
         self._scr.keypad(True)
+        self._scr.timeout(200)  # poll so badge / spinner refresh live
 
         while True:
             self._render()
-            self._scr.timeout(-1)
             key = self._scr.getch()
+
+            if key == -1:
+                # Timeout — just re-render to refresh badge/spinner.
+                continue
 
             if key in (curses.KEY_UP, ord("k")):
                 self._cursor = self._next_selectable(self._cursor, -1)
@@ -105,6 +117,9 @@ class Menu:
             elif key in (27, ord("q")):  # Escape or q → quit TUI
                 return QUIT
 
+            elif key == ord("n"):
+                return NOTIFICATIONS
+
     # Box-drawing characters for the item border
     _BOX_H = "─"
     _BOX_TL = "┌"
@@ -119,18 +134,28 @@ class Menu:
 
         # ── Header (row 0) ──────────────────────────────────────────────────
         if self._breadcrumb == "COLETTE":
-            # Root level: spaced logo centered in the reverse bar
             logo = "◆  C O L E T T E  ◆"
             header = logo.center(w - 2)
         else:
             header = f"  {self._breadcrumb}  "
-        header_line = header.ljust(w)[:w]
+
+        # Running indicator appended to header when background tasks are active
+        with state.running_tasks_lock:
+            running = state.running_tasks
+
+        if running > 0:
+            indicator = f"  ⏳ {running} running"
+            # Trim header to make room
+            max_header = w - len(indicator) - 1
+            header_line = (header[:max_header] + indicator).ljust(w)[:w]
+        else:
+            header_line = header.ljust(w)[:w]
+
         self._scr.attron(curses.A_REVERSE | curses.A_BOLD)
         self._scr.addstr(0, 0, header_line)
         self._scr.attroff(curses.A_REVERSE | curses.A_BOLD)
 
         # ── Box border (rows 1 and h-2) ────────────────────────────────────
-        # Only draw if there's enough vertical space
         if h >= 5:
             inner_w = max(0, w - 2)
             top_border = self._BOX_TL + self._BOX_H * inner_w + self._BOX_TR
@@ -142,8 +167,16 @@ class Menu:
                 pass
 
         # ── Footer hint (row h-1) ──────────────────────────────────────────
-        hint = " ↑↓ navigate   → select   ← back   q quit "
-        self._scr.addstr(h - 1, 0, hint.ljust(w - 1)[: w - 1], curses.A_DIM)
+        with state.notifications_lock:
+            unseen = sum(1 for n in state.notifications if not n.seen)
+
+        base_hint = " ↑↓ navigate   → select   ← back   q quit "
+        if unseen > 0:
+            badge = f"  n notifications ({unseen}) "
+            hint = (base_hint + badge).ljust(w - 1)[: w - 1]
+        else:
+            hint = base_hint.ljust(w - 1)[: w - 1]
+        self._scr.addstr(h - 1, 0, hint, curses.A_DIM)
 
         # ── Items (rows 2..h-3, inside the box) ────────────────────────────
         # Item area: col 2..w-3 (inside │ borders), rows 2..h-3

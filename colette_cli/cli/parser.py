@@ -210,6 +210,8 @@ def build_parser():
         help="Run the 'onupdate' hook for one or many projects",
         description=(
             "Runs the 'onupdate' hook defined for each project's template.\n\n"
+            "When run from a registered project directory without arguments, only\n"
+            "that project is updated. Otherwise all projects are updated.\n\n"
             "To enable updates for a template, edit:\n"
             "  ~/.config/colette/templates/<template>/.onupdate\n\n"
             "To run onupdate directly on a template (without a project), use:\n"

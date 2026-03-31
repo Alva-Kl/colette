@@ -383,3 +383,83 @@ class TestCmdUpdate:
         args = MagicMock(machine="nonexistent", projects=[])
         with pytest.raises(SystemExit):
             cmd_update(args)
+
+
+class TestCmdUpdateCwdDetection:
+    """Tests for CWD-based project detection in 'colette update' via main()."""
+
+    def _setup(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_projects
+        project_path = tmp_path / "myproject"
+        project_path.mkdir()
+        cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
+        save_config(cfg)
+        save_projects([make_project("myproject", path=str(project_path))])
+        return project_path
+
+    def test_main_targets_cwd_project_when_no_args(self, tmp_config, tmp_path):
+        """main() sets args.projects to [cwd project] when update is run without args."""
+        import os, sys
+        project_path = self._setup(tmp_config, tmp_path)
+        orig = os.getcwd()
+        try:
+            os.chdir(str(project_path))
+            with patch.object(sys, "argv", ["colette", "update"]), \
+                 patch("colette_cli.main.cmd_update") as mock_update:
+                from colette_cli.main import main
+                main()
+        finally:
+            os.chdir(orig)
+
+        mock_update.assert_called_once()
+        resolved_args = mock_update.call_args[0][0]
+        assert resolved_args.projects == ["myproject"]
+
+    def test_main_updates_all_when_not_in_project_dir(self, tmp_config, tmp_path):
+        """main() leaves args.projects empty (all projects) when cwd is not a project."""
+        import os, sys
+        self._setup(tmp_config, tmp_path)
+        unregistered = tmp_path / "other"
+        unregistered.mkdir()
+        orig = os.getcwd()
+        try:
+            os.chdir(str(unregistered))
+            with patch.object(sys, "argv", ["colette", "update"]), \
+                 patch("colette_cli.main.cmd_update") as mock_update:
+                from colette_cli.main import main
+                main()
+        finally:
+            os.chdir(orig)
+
+        mock_update.assert_called_once()
+        resolved_args = mock_update.call_args[0][0]
+        assert resolved_args.projects == []
+
+    def test_main_explicit_project_name_bypasses_cwd(self, tmp_config, tmp_path):
+        """main() respects explicit project names even when cwd is a different project."""
+        import os, sys
+        from colette_cli.utils.config import save_config, save_projects
+        project_a = tmp_path / "proj-a"
+        project_a.mkdir()
+        project_b = tmp_path / "proj-b"
+        project_b.mkdir()
+        cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
+        save_config(cfg)
+        save_projects([
+            make_project("proj-a", path=str(project_a)),
+            make_project("proj-b", path=str(project_b)),
+        ])
+        orig = os.getcwd()
+        try:
+            os.chdir(str(project_a))
+            with patch.object(sys, "argv", ["colette", "update", "proj-b"]), \
+                 patch("colette_cli.main.cmd_update") as mock_update:
+                from colette_cli.main import main
+                main()
+        finally:
+            os.chdir(orig)
+
+        mock_update.assert_called_once()
+        resolved_args = mock_update.call_args[0][0]
+        assert resolved_args.projects == ["proj-b"]
+

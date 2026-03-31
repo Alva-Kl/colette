@@ -21,6 +21,10 @@ from colette_cli.utils.helpers import detect_project_from_cwd
 # Commands that accept a single optional project name and fall back to cwd detection
 _CWD_DETECT_COMMANDS = {"attach", "code", "copilot", "delete", "unlink"}
 
+# Batch commands that accept a list of project names and fall back to cwd detection
+# when no projects are given (falls back to all projects if cwd is not a project)
+_CWD_DETECT_BATCH_COMMANDS = {"update"}
+
 
 def main():
     """Main CLI dispatcher."""
@@ -40,6 +44,12 @@ def main():
         else:
             subparsers[args.command].print_help()
             sys.exit(0)
+
+    # Auto-detect project from cwd for batch commands when no projects were given
+    if args.command in _CWD_DETECT_BATCH_COMMANDS and getattr(args, "projects", None) == []:
+        detected = detect_project_from_cwd()
+        if detected:
+            args.projects = [detected]
 
     handlers = {
         "config": cmd_config,

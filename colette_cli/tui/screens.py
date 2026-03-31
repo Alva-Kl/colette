@@ -111,8 +111,109 @@ def _popup(fn):
     return wrapper
 
 
+def _async_popup(fn, label: str):
+    """Return a wrapper that runs fn in a background thread.
+
+    Captures stdout/stderr, appends a Notification to shared state when done,
+    and fires a desktop notification. The TUI remains responsive throughout.
+    """
+    import io
+    import re
+    import threading
+    import sys
+    from colette_cli.utils.notify import send_notification
+    from . import state
+
+    def wrapper(*args, **kwargs):
+        from .forms import show_running
+        show_running(f"{label}…")
+
+        def _run():
+            with state.running_tasks_lock:
+                state.running_tasks += 1
+            buf = io.StringIO()
+            success = True
+            try:
+                old_out, old_err = sys.stdout, sys.stderr
+                sys.stdout = sys.stderr = buf
+                try:
+                    fn(*args, **kwargs)
+                except SystemExit:
+                    success = False
+                except Exception:
+                    success = False
+                finally:
+                    sys.stdout, sys.stderr = old_out, old_err
+            except Exception:
+                sys.stdout, sys.stderr = old_out, old_err
+                success = False
+            finally:
+                with state.running_tasks_lock:
+                    state.running_tasks -= 1
+
+            captured = buf.getvalue().strip()
+            captured = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", captured)
+
+            notif = state.Notification(
+                label=label,
+                success=success,
+                output=captured,
+            )
+            with state.notifications_lock:
+                state.notifications.append(notif)
+
+            title = f"✓ {label}" if success else f"✗ {label} failed"
+            body = "" if success else (captured[:120] if captured else "See notification log")
+            send_notification(title, body)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+
+    return wrapper
+
+
 def _open_nano(path):
     subprocess.run(["nano", str(path)])
+
+
+# ---------------------------------------------------------------------------
+# Notifications screen
+# ---------------------------------------------------------------------------
+
+def notifications_screen_items():
+    """Screen listing completed background task notifications."""
+    from . import state
+
+    # Mark all current notifications as seen when this screen opens
+    with state.notifications_lock:
+        for n in state.notifications:
+            n.seen = True
+        snapshot = list(state.notifications)
+
+    def _clear():
+        with state.notifications_lock:
+            state.notifications.clear()
+
+    items = [MenuItem("Clear all", action=_clear)]
+
+    if not snapshot:
+        items.append(MenuItem("(no notifications)", action=lambda: None))
+        return items
+
+    for notif in reversed(snapshot):
+        prefix = "✓" if notif.success else "✗"
+        label = f"{prefix} {notif.label}"
+        detail = notif.timestamp
+
+        if not notif.success and notif.output:
+            def _view_output(out=notif.output, lbl=notif.label):
+                from .forms import show_output
+                show_output(out, title=lbl)
+            items.append(MenuItem(label, detail=detail, action=_view_output))
+        else:
+            items.append(MenuItem(label, detail=detail, action=lambda: None))
+
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +516,7 @@ def _create_project_interactive():
 
     from colette_cli.project import cmd_create
     args = Namespace(name=name, machine=machine, template=template)
-    _popup(cmd_create)(args)
+    _async_popup(cmd_create, f"Create {name}")(args)
 
 
 def _link_directory_interactive():
@@ -443,11 +544,15 @@ def project_list_items():
 
     def _start_all():
         from colette_cli.session import cmd_start
-        _popup(cmd_start)(Namespace(machine=None, projects=[]))
+        _async_popup(cmd_start, "Start all")(Namespace(machine=None, projects=[]))
 
     def _stop_all():
         from colette_cli.session import cmd_stop
-        _popup(cmd_stop)(Namespace(machine=None, projects=[]))
+        _async_popup(cmd_stop, "Stop all")(Namespace(machine=None, projects=[]))
+
+    def _update_all():
+        from colette_cli.session import cmd_update
+        _async_popup(cmd_update, "Update all")(Namespace(machine=None, projects=[]))
 
     items = []
 
@@ -474,14 +579,19 @@ def project_list_items():
 
             def _start_machine(mn=machine_name):
                 from colette_cli.session import cmd_start
-                _popup(cmd_start)(Namespace(machine=mn, projects=[]))
+                _async_popup(cmd_start, f"Start {mn}")(Namespace(machine=mn, projects=[]))
 
             def _stop_machine(mn=machine_name):
                 from colette_cli.session import cmd_stop
-                _popup(cmd_stop)(Namespace(machine=mn, projects=[]))
+                _async_popup(cmd_stop, f"Stop {mn}")(Namespace(machine=mn, projects=[]))
+
+            def _update_machine(mn=machine_name):
+                from colette_cli.session import cmd_update
+                _async_popup(cmd_update, f"Update {mn}")(Namespace(machine=mn, projects=[]))
 
             items.append(MenuItem(f"Start All — {machine_name}", action=_start_machine))
             items.append(MenuItem(f"Stop All — {machine_name}", action=_stop_machine))
+            items.append(MenuItem(f"Update All — {machine_name}", action=_update_machine))
 
     # ── Separator ────────────────────────────────────────────────────────────
     items.append(MenuItem("─" * 30, selectable=False))
@@ -489,6 +599,7 @@ def project_list_items():
     # ── Global actions ───────────────────────────────────────────────────────
     items.append(MenuItem("Start All", action=_start_all))
     items.append(MenuItem("Stop All", action=_stop_all))
+    items.append(MenuItem("Update All", action=_update_all))
 
     # ── Project management ───────────────────────────────────────────────────
     items.append(MenuItem("Create project", action=_create_project_interactive))
@@ -530,15 +641,15 @@ def project_action_items(project):
 
     def _start():
         from colette_cli.session import cmd_start
-        _popup(cmd_start)(Namespace(machine=None, projects=[name]))
+        _async_popup(cmd_start, f"Start {name}")(Namespace(machine=None, projects=[name]))
 
     def _stop():
         from colette_cli.session import cmd_stop
-        _popup(cmd_stop)(Namespace(machine=None, projects=[name]))
+        _async_popup(cmd_stop, f"Stop {name}")(Namespace(machine=None, projects=[name]))
 
     def _update():
         from colette_cli.session import cmd_update
-        _popup(cmd_update)(Namespace(machine=None, projects=[name]))
+        _async_popup(cmd_update, f"Update {name}")(Namespace(machine=None, projects=[name]))
 
     def _open_code():
         if is_remote:
@@ -568,7 +679,7 @@ def project_action_items(project):
             expected=name,
         ):
             return
-        _popup(lambda: cmd_delete(Namespace(name=name), skip_confirmation=True))()
+        _async_popup(lambda: cmd_delete(Namespace(name=name), skip_confirmation=True), f"Delete {name}")()
 
     return [
         MenuItem("Open session", action=_suspend(_open_session)),
@@ -639,7 +750,7 @@ def template_action_items(template_name):
             template=template_name,
         )
         from colette_cli.project import cmd_create
-        _popup(cmd_create)(args)
+        _async_popup(cmd_create, f"Create {name}")(args)
 
     def _run_update():
         from colette_cli.template import run_onupdate_for_template, get_template_metadata
@@ -665,7 +776,7 @@ def template_action_items(template_name):
 
     return [
         MenuItem("Create project", action=_create_project),
-        MenuItem("Run update", action=_popup(_run_update)),
+        MenuItem("Run update", action=_async_popup(_run_update, f"Update template {template_name}")),
         MenuItem("Edit hooks", children=lambda: template_hook_items(template_name)),
         MenuItem("Edit parameters", children=lambda: template_param_items(template_name)),
     ]

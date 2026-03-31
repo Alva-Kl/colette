@@ -114,7 +114,7 @@ class TestProjectListItems:
     def test_global_actions_always_present(self, tmp_config):
         from colette_cli.tui.screens import project_list_items
         labels = _item_labels(project_list_items())
-        for label in ("Create project", "Link project", "Start All", "Stop All"):
+        for label in ("Create project", "Link project", "Start All", "Stop All", "Update All"):
             assert label in labels
 
     def test_global_actions_come_after_projects(self, tmp_config):
@@ -191,6 +191,32 @@ class TestProjectListItems:
             next(i for i in items if i.label == "Stop All").run()
         mock_stop.assert_called_once()
         assert mock_stop.call_args[0][0].projects == []
+
+    def test_update_all_calls_cmd_update(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects
+        save_config(LOCAL_CFG)
+        save_projects([make_project("proj")])
+        with patch("colette_cli.session.cmd_update") as mock_update, \
+             patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
+            from colette_cli.tui.screens import project_list_items
+            items = project_list_items()
+            next(i for i in items if i.label == "Update All").run()
+        mock_update.assert_called_once()
+        assert mock_update.call_args[0][0].projects == []
+        assert mock_update.call_args[0][0].machine is None
+
+    def test_per_machine_update_all_calls_cmd_update_with_machine(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects
+        save_config(LOCAL_CFG)
+        save_projects([make_project("proj")])
+        with patch("colette_cli.session.cmd_update") as mock_update, \
+             patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
+            from colette_cli.tui.screens import project_list_items
+            items = project_list_items()
+            next(i for i in items if i.label == "Update All — local").run()
+        mock_update.assert_called_once()
+        assert mock_update.call_args[0][0].machine == "local"
+        assert mock_update.call_args[0][0].projects == []
 
     def test_create_project_calls_cmd_create(self, tmp_config):
         from colette_cli.utils.config import save_config
@@ -898,3 +924,181 @@ class TestHookLogItems:
         items = hook_log_items()
         items[0].run()  # "Clear log"
         assert load_hook_failures() == []
+
+
+# ---------------------------------------------------------------------------
+# _async_popup
+# ---------------------------------------------------------------------------
+
+class TestAsyncPopup:
+    def _run_async(self, fn, label="test-op", timeout=2.0):
+        """Run _async_popup wrapper and wait for the background thread."""
+        import threading
+        import colette_cli.tui.state as state
+        from colette_cli.tui.screens import _async_popup
+
+        done = threading.Event()
+        original_append = list.append
+
+        # Patch notifications.append to signal when notification lands
+        with patch("colette_cli.utils.notify.send_notification"), \
+             patch("colette_cli.tui.forms.show_running"):
+            # Wrap the action so we know when the thread finishes
+            completed = threading.Event()
+
+            def _patched_fn(*a, **kw):
+                try:
+                    fn(*a, **kw)
+                finally:
+                    completed.set()
+
+            wrapper = _async_popup(_patched_fn, label)
+            wrapper()
+            completed.wait(timeout)
+
+        return state.notifications
+
+    def test_success_appends_notification(self, tmp_config):
+        import colette_cli.tui.state as state
+        state.notifications.clear()
+
+        def ok():
+            print("all good")
+
+        notifs = self._run_async(ok, "test-success")
+        assert len(notifs) == 1
+        assert notifs[0].success is True
+        assert notifs[0].label == "test-success"
+        assert "all good" in notifs[0].output
+
+    def test_failure_appends_notification(self, tmp_config):
+        import colette_cli.tui.state as state
+        state.notifications.clear()
+
+        def fail():
+            raise SystemExit(1)
+
+        notifs = self._run_async(fail, "test-fail")
+        assert len(notifs) == 1
+        assert notifs[0].success is False
+        assert notifs[0].label == "test-fail"
+
+    def test_running_tasks_incremented_then_decremented(self, tmp_config):
+        import colette_cli.tui.state as state
+        import threading
+        from colette_cli.tui.screens import _async_popup
+
+        state.notifications.clear()
+        state.running_tasks = 0
+
+        started = threading.Event()
+        finish = threading.Event()
+
+        def slow():
+            started.set()
+            finish.wait()
+
+        with patch("colette_cli.utils.notify.send_notification"), \
+             patch("colette_cli.tui.forms.show_running"):
+            wrapper = _async_popup(slow, "slow-op")
+            wrapper()
+
+        started.wait(2.0)
+        with state.running_tasks_lock:
+            count_during = state.running_tasks
+        finish.set()
+        # Give thread time to decrement
+        import time; time.sleep(0.1)
+        with state.running_tasks_lock:
+            count_after = state.running_tasks
+
+        assert count_during == 1
+        assert count_after == 0
+
+    def test_notification_seen_false_initially(self, tmp_config):
+        import colette_cli.tui.state as state
+        state.notifications.clear()
+
+        notifs = self._run_async(lambda: None, "seen-test")
+        assert notifs[0].seen is False
+
+    def test_desktop_notification_fired(self, tmp_config):
+        import colette_cli.tui.state as state
+        import threading
+        from colette_cli.tui.screens import _async_popup
+
+        state.notifications.clear()
+        completed = threading.Event()
+
+        def ok():
+            completed.set()
+
+        with patch("colette_cli.utils.notify.send_notification") as mock_notif, \
+             patch("colette_cli.tui.forms.show_running"):
+            _async_popup(ok, "notif-test")()
+            completed.wait(2.0)
+            import time; time.sleep(0.05)
+
+        mock_notif.assert_called_once()
+        title = mock_notif.call_args[0][0]
+        assert "notif-test" in title
+
+
+# ---------------------------------------------------------------------------
+# notifications_screen_items
+# ---------------------------------------------------------------------------
+
+class TestNotificationsScreen:
+    def _push_notif(self, label="op", success=True, output=""):
+        import colette_cli.tui.state as state
+        state.notifications.append(
+            state.Notification(label=label, success=success, output=output)
+        )
+
+    def setup_method(self):
+        import colette_cli.tui.state as state
+        state.notifications.clear()
+
+    def test_clear_all_removes_notifications(self):
+        import colette_cli.tui.state as state
+        from colette_cli.tui.screens import notifications_screen_items
+        self._push_notif("op1")
+        items = notifications_screen_items()
+        clear_item = next(i for i in items if i.label == "Clear all")
+        clear_item.run()
+        assert state.notifications == []
+
+    def test_empty_shows_placeholder(self):
+        from colette_cli.tui.screens import notifications_screen_items
+        labels = [i.label for i in notifications_screen_items()]
+        assert "(no notifications)" in labels
+
+    def test_success_notification_shown(self):
+        from colette_cli.tui.screens import notifications_screen_items
+        self._push_notif("start-proj", success=True)
+        labels = [i.label for i in notifications_screen_items()]
+        assert any("start-proj" in l and "✓" in l for l in labels)
+
+    def test_failure_notification_shown(self):
+        from colette_cli.tui.screens import notifications_screen_items
+        self._push_notif("bad-op", success=False, output="error text")
+        labels = [i.label for i in notifications_screen_items()]
+        assert any("bad-op" in l and "✗" in l for l in labels)
+
+    def test_failed_notification_action_shows_output(self):
+        from colette_cli.tui.screens import notifications_screen_items
+        self._push_notif("bad-op", success=False, output="error text")
+        items = notifications_screen_items()
+        fail_item = next(i for i in items if "bad-op" in i.label)
+        with patch("colette_cli.tui.forms.show_output") as mo:
+            fail_item.run()
+        mo.assert_called_once()
+        assert "error text" in mo.call_args[0][0]
+
+    def test_opening_screen_marks_notifications_seen(self):
+        import colette_cli.tui.state as state
+        from colette_cli.tui.screens import notifications_screen_items
+        self._push_notif("op")
+        assert state.notifications[0].seen is False
+        notifications_screen_items()
+        assert state.notifications[0].seen is True

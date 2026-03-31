@@ -10,8 +10,8 @@ import sys
 
 from colette_cli.utils.formatting import err
 
-from .menu import Menu, QUIT
-from .screens import main_menu_items
+from .menu import Menu, QUIT, NOTIFICATIONS
+from .screens import main_menu_items, notifications_screen_items
 from .splash import show_splash
 from . import state
 
@@ -36,6 +36,10 @@ def _run(stdscr):
 
         if selected is QUIT:
             break  # q or Escape → exit immediately
+
+        if selected is NOTIFICATIONS:
+            stack.append(("COLETTE  ›  Notifications", notifications_screen_items()))
+            continue
 
         if selected is None:
             # ← pressed
