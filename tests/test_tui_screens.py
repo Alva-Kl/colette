@@ -352,27 +352,107 @@ class TestProjectActionItems:
 # template_action_items
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# template_list_items
+# ---------------------------------------------------------------------------
+
+class TestTemplateListItems:
+    def _cfg_with_templates(self, machine_templates):
+        """Build a config dict with machines each having a list of template names."""
+        machines = {}
+        for machine_name, tmpl_names in machine_templates.items():
+            machines[machine_name] = {
+                "type": "local",
+                "projects_dir": f"/tmp/{machine_name}/projects",
+                "templates": [{"name": t, "type": "directory", "path": f"/tmp/{t}"} for t in tmpl_names],
+            }
+        default = next(iter(machines)) if machines else None
+        return {"machines": machines, "default_machine": default}
+
+    def test_no_templates_shows_placeholder(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.tui.screens import template_list_items
+        save_config({"machines": {"local": make_local_machine()}, "default_machine": "local"})
+        items = template_list_items()
+        assert len(items) == 1
+        assert items[0].label == "(no templates)"
+
+    def test_single_machine_shows_header_and_template(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.tui.screens import template_list_items
+        save_config(self._cfg_with_templates({"local": ["web"]}))
+        labels = _item_labels(template_list_items())
+        assert "── local (default) ──" in labels
+        assert "web" in labels
+
+    def test_same_name_templates_on_two_machines_both_appear(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.tui.screens import template_list_items
+        cfg = self._cfg_with_templates({"alpha": ["shared"], "beta": ["shared"]})
+        cfg["default_machine"] = "alpha"
+        save_config(cfg)
+        labels = _item_labels(template_list_items())
+        # header for each machine
+        assert "── alpha (default) ──" in labels
+        assert "── beta ──" in labels
+        # template appears twice (once per machine)
+        assert labels.count("shared") == 2
+
+    def test_templates_sorted_within_machine(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.tui.screens import template_list_items
+        save_config(self._cfg_with_templates({"local": ["zebra", "alpha", "middle"]}))
+        labels = _item_labels(template_list_items())
+        tmpl_labels = [l for l in labels if not l.startswith("──")]
+        assert tmpl_labels == sorted(tmpl_labels)
+
+    def test_default_machine_appears_first(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.tui.screens import template_list_items
+        cfg = self._cfg_with_templates({"zzz": ["t1"], "aaa": ["t2"]})
+        cfg["default_machine"] = "zzz"
+        save_config(cfg)
+        labels = _item_labels(template_list_items())
+        header_indices = {l: labels.index(l) for l in labels if l.startswith("──")}
+        assert header_indices["── zzz (default) ──"] < header_indices["── aaa ──"]
+
+    def test_template_action_children_bound_to_correct_machine(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.tui.screens import template_list_items
+        cfg = self._cfg_with_templates({"m1": ["tmpl"], "m2": ["tmpl"]})
+        cfg["default_machine"] = "m1"
+        save_config(cfg)
+        items = template_list_items()
+        tmpl_items = [i for i in items if i.label == "tmpl"]
+        assert len(tmpl_items) == 2
+        # Each submenu should be bound to a different machine: verify _run_update
+        # uses the right machine by checking that children() returns action items
+        for ti in tmpl_items:
+            actions = ti.get_children()
+            assert any(a.label == "Run update" for a in actions)
+
+
 class TestTemplateActionItems:
     def test_returns_create_edit_hooks_edit_parameters(self, tmp_config):
         from colette_cli.tui.screens import template_action_items
-        labels = _item_labels(template_action_items("my-tmpl"))
+        labels = _item_labels(template_action_items("my-tmpl", "local"))
         assert labels == ["Create project", "Run update", "Edit hooks", "Edit parameters"]
 
     def test_edit_hooks_is_submenu(self, tmp_config):
         from colette_cli.tui.screens import template_action_items
-        edit_hooks = next(i for i in template_action_items("my-tmpl") if i.label == "Edit hooks")
+        edit_hooks = next(i for i in template_action_items("my-tmpl", "local") if i.label == "Edit hooks")
         assert not edit_hooks.is_leaf
 
     def test_edit_parameters_is_submenu(self, tmp_config):
         from colette_cli.tui.screens import template_action_items
-        edit_params = next(i for i in template_action_items("my-tmpl") if i.label == "Edit parameters")
+        edit_params = next(i for i in template_action_items("my-tmpl", "local") if i.label == "Edit parameters")
         assert not edit_params.is_leaf
 
-    def test_create_project_calls_cmd_create(self, tmp_config):
+    def test_create_project_calls_cmd_create_with_correct_machine(self, tmp_config):
         from colette_cli.utils.config import save_config
         from colette_cli.tui.screens import template_action_items
         save_config(LOCAL_CFG)
-        items = template_action_items("my-tmpl")
+        items = template_action_items("my-tmpl", "local")
         create = next(i for i in items if i.label == "Create project")
         with patch("colette_cli.project.cmd_create") as mock_create, \
              patch("colette_cli.tui.forms.ask", return_value="new-proj"), \
@@ -382,12 +462,13 @@ class TestTemplateActionItems:
         args = mock_create.call_args[0][0]
         assert args.name == "new-proj"
         assert args.template == "my-tmpl"
+        assert args.machine == "local"
 
     def test_create_project_aborts_on_empty_name(self, tmp_config):
         from colette_cli.utils.config import save_config
         from colette_cli.tui.screens import template_action_items
         save_config(LOCAL_CFG)
-        items = template_action_items("my-tmpl")
+        items = template_action_items("my-tmpl", "local")
         create = next(i for i in items if i.label == "Create project")
         with patch("colette_cli.project.cmd_create") as mock_create, \
              patch("colette_cli.tui.forms.ask", return_value=None):

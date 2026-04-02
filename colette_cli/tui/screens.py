@@ -716,37 +716,44 @@ def project_hook_items(project):
 def template_list_items():
     cfg = load_config()
     templates_cfg = load_templates()
-    seen = set()
+    default = cfg.get("default_machine")
     items = []
 
-    for machine_name, machine in sorted(cfg.get("machines", {}).items()):
-        for tmpl_name in list_machine_template_names(machine):
-            if tmpl_name in seen:
-                continue
-            seen.add(tmpl_name)
+    by_machine = {}
+    for machine_name, machine in cfg.get("machines", {}).items():
+        tmpl_names = list_machine_template_names(machine)
+        if tmpl_names:
+            by_machine[machine_name] = tmpl_names
+
+    if not by_machine:
+        return [MenuItem("(no templates)", action=lambda: None)]
+
+    def _machine_label(name):
+        return f"── {name}" + (" (default)" if name == default else "") + " ──"
+
+    for machine_name in sorted(by_machine, key=lambda m: (m != default, m)):
+        items.append(MenuItem(_machine_label(machine_name), selectable=False))
+        for tmpl_name in sorted(by_machine[machine_name]):
             metadata = get_template_metadata(templates_cfg, tmpl_name)
             desc = (metadata or {}).get("description", "")
             items.append(MenuItem(
                 tmpl_name,
                 detail=desc,
-                children=lambda t=tmpl_name: template_action_items(t),
+                children=lambda t=tmpl_name, mn=machine_name: template_action_items(t, mn),
             ))
 
-    if not items:
-        return [MenuItem("(no templates)", action=lambda: None)]
     return items
 
 
-def template_action_items(template_name):
+def template_action_items(template_name, machine_name):
     def _create_project():
         from .forms import ask
         name = ask(f"New project name for '{template_name}'")
         if not name:
             return
-        cfg = load_config()
         args = Namespace(
             name=name,
-            machine=cfg.get("default_machine"),
+            machine=machine_name,
             template=template_name,
         )
         from colette_cli.project import cmd_create
@@ -757,7 +764,6 @@ def template_action_items(template_name):
         from colette_cli.template.registry import get_machine_template
         from colette_cli.utils.helpers import is_remote_machine
         cfg = load_config()
-        machine_name = cfg.get("default_machine")
         machine = cfg.get("machines", {}).get(machine_name) or {}
         is_remote = is_remote_machine(machine)
         templates_cfg = load_templates()
