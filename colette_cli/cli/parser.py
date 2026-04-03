@@ -162,7 +162,16 @@ def build_parser():
     )
     copp.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
 
-    monp = sub.add_parser("monitor", help="Monitor project sessions in tmux panes")
+    monp = sub.add_parser(
+        "monitor",
+        help="Monitor project sessions in tmux panes",
+        description=(
+            "Opens a tmux window with panes attached to active project sessions.\n\n"
+            "When run from a registered project directory without arguments, only\n"
+            "that project is monitored. Otherwise all active sessions are shown."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     monp.add_argument(
         "--machine",
         "-m",
@@ -187,7 +196,16 @@ def build_parser():
         ),
     )
 
-    stp = sub.add_parser("start", help="Start tmux sessions for projects")
+    stp = sub.add_parser(
+        "start",
+        help="Start tmux sessions for projects",
+        description=(
+            "Starts tmux sessions for one or more projects.\n\n"
+            "When run from a registered project directory without arguments, only\n"
+            "that project is started. Otherwise all projects are started."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     stp.add_argument(
         "--machine",
         "-m",
@@ -196,7 +214,16 @@ def build_parser():
     )
     stp.add_argument("projects", nargs="*", help="Optional project names")
 
-    stpp = sub.add_parser("stop", help="Stop tmux sessions for projects")
+    stpp = sub.add_parser(
+        "stop",
+        help="Stop tmux sessions for projects",
+        description=(
+            "Stops tmux sessions for one or more projects.\n\n"
+            "When run from a registered project directory without arguments, only\n"
+            "that project is stopped. Otherwise all projects are stopped."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     stpp.add_argument(
         "--machine",
         "-m",
@@ -235,6 +262,8 @@ def build_parser():
             "For a single project, opens an interactive tmux session.\n"
             "Without a project name, opens a multi-pane tmux window for all projects\n"
             "that have an 'onlogs' hook.\n\n"
+            "When run from a registered project directory without a name argument,\n"
+            "the current project is used automatically.\n\n"
             "To enable logs for a template, edit:\n"
             "  ~/.config/colette/templates/<template>/.onlogs"
         ),

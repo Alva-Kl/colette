@@ -23,7 +23,7 @@ _CWD_DETECT_COMMANDS = {"attach", "code", "copilot", "delete", "unlink"}
 
 # Batch commands that accept a list of project names and fall back to cwd detection
 # when no projects are given (falls back to all projects if cwd is not a project)
-_CWD_DETECT_BATCH_COMMANDS = {"update"}
+_CWD_DETECT_BATCH_COMMANDS = {"start", "stop", "monitor", "update"}
 
 
 def main():
@@ -50,6 +50,13 @@ def main():
         detected = detect_project_from_cwd()
         if detected:
             args.projects = [detected]
+
+    # logs: auto-detect project from cwd when no name given (no exit fallback —
+    # omitting the name is valid and shows logs for all projects)
+    if args.command == "logs" and getattr(args, "name", None) is None:
+        detected = detect_project_from_cwd()
+        if detected:
+            args.name = detected
 
     handlers = {
         "config": cmd_config,
