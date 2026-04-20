@@ -9,7 +9,6 @@ from .commands import (
     cmd_link,
     cmd_list,
     cmd_unlink,
-    require_machine,
     require_project,
 )
 
@@ -22,6 +21,5 @@ __all__ = [
     "cmd_link",
     "cmd_list",
     "cmd_unlink",
-    "require_machine",
     "require_project",
 ]

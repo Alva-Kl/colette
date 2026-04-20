@@ -3,23 +3,22 @@
 from pathlib import Path
 
 from colette_cli.template import (
+    list_machine_template_hook_paths,
     list_machine_template_names,
-    list_template_hook_paths,
     normalize_machine_templates,
-    remove_template_metadata,
     scaffold_template_hook_files,
-    upsert_template_metadata,
 )
 from colette_cli.utils.config import (
-    get_template_dir,
-    get_template_hook_path,
+    get_machine_template_dir,
+    get_machine_template_hook_path,
     get_project_hook_path,
     load_config,
+    load_projects,
     load_templates,
-    remove_template_dir,
+    rename_machine_template_dir,
     require_machine,
     save_config,
-    save_templates,
+    save_projects,
     scaffold_project_hook_files,
 )
 from colette_cli.utils.formatting import bold, cyan, err, info
@@ -69,7 +68,10 @@ def cmd_config_list(args):
         mtype = m.get("type", "local")
         if mtype == "ssh":
             key_info = f", key={m['ssh_key']}" if "ssh_key" in m else ""
-            print(f"  {bold(name)}{tag}  -  ssh  host={m.get('host', '?')}{key_info}")
+            port_info = f", port={m['port']}" if "port" in m else ""
+            print(f"  {bold(name)}{tag}  -  ssh  host={m.get('host', '?')}{port_info}{key_info}")
+            cp = m.get("colette_path")
+            print(f"    colette_path: {cp if cp else '(not set)'}")
         else:
             print(f"  {bold(name)}{tag}  -  local")
         template_names = list_machine_template_names(m)
@@ -88,33 +90,33 @@ def cmd_config_list_templates(args):
         err("no machine specified and no default machine set.")
     machine = require_machine(cfg, machine_name)
     templates = normalize_machine_templates(machine)
-    metadata_cfg = load_templates()
+    templates_cfg = load_templates()
     if not templates:
         print(f"No templates configured for machine '{machine_name}'.")
         return
     print(f"\n{bold(f'Templates for {machine_name}:')}")
     for template in templates:
-        metadata = next(
-            (
-                item
-                for item in metadata_cfg.get("templates", [])
-                if item.get("name") == template["name"]
-            ),
-            {},
-        )
+        tname = template["name"]
         source = template.get("path") or template.get("url") or "?"
-        print(
-            f"  {bold(template['name'])}  -  {template.get('type', 'directory')}  {source}"
-        )
-        if metadata.get("description"):
-            print(f"    {metadata['description']}")
-        print(f"    hooks_dir: {get_template_dir(template['name'])}")
-        scripts = list_template_hook_paths(template["name"])
+        print(f"  {bold(tname)}  -  {template.get('type', 'directory')}  {source}")
+        description = template.get("description")
+        if not description:
+            legacy = next((t for t in templates_cfg.get("templates", []) if t.get("name") == tname), {})
+            description = legacy.get("description")
+        if description:
+            print(f"    {description}")
+        hooks_dir = get_machine_template_dir(machine_name, tname)
+        print(f"    hooks_dir: {hooks_dir}")
+        scripts = list_machine_template_hook_paths(machine_name, tname)
         if scripts:
             script_names = ", ".join(sorted(scripts))
             print(f"    hook files: {script_names}")
-        if metadata.get("params"):
-            for pk, pv in metadata["params"].items():
+        params = template.get("params")
+        if not params:
+            legacy = next((t for t in templates_cfg.get("templates", []) if t.get("name") == tname), {})
+            params = legacy.get("params")
+        if params:
+            for pk, pv in params.items():
                 print(f"    param {pk}: {pv}")
     print()
 
@@ -141,11 +143,21 @@ def cmd_config_add_machine(args):
         if not host:
             err("SSH host cannot be empty.")
         machine["host"] = host
+        port = input("SSH port (leave empty for default 22): ").strip()
+        if port:
+            if not port.isdigit():
+                err("SSH port must be a number.")
+            machine["port"] = int(port)
         key = input(
             "Path to SSH private key (leave empty to use SSH default): "
         ).strip()
         if key:
             machine["ssh_key"] = str(Path(key).expanduser())
+        colette_path = input(
+            "Path to colette binary on this machine (leave empty to skip auto-sync): "
+        ).strip()
+        if colette_path:
+            machine["colette_path"] = colette_path
 
     template = input("Initial template name (optional, leave empty to skip): ").strip()
     if template:
@@ -175,10 +187,7 @@ def cmd_config_add_machine(args):
 
     save_config(cfg)
     if template:
-        templates_cfg = load_templates()
-        upsert_template_metadata(templates_cfg, template)
-        save_templates(templates_cfg)
-        scaffold_template_hook_files(template)
+        scaffold_template_hook_files(template, name)
     info(f"Machine '{name}' added.")
 
 
@@ -199,13 +208,28 @@ def cmd_config_edit_machine(args):
         cur_host = machine.get("host", "")
         host = input(f"SSH host [{cur_host}]: ").strip() or cur_host
         machine["host"] = host
+        cur_port = machine.get("port", "")
+        port = input(f"SSH port [{cur_port or 'default 22'}]: ").strip()
+        if port:
+            if not port.isdigit():
+                err("SSH port must be a number.")
+            machine["port"] = int(port)
+        elif "port" in machine and not port:
+            pass  # keep existing port if user presses Enter
         cur_key = machine.get("ssh_key", "")
         key = input(f"SSH key path [{cur_key}] (leave empty to keep): ").strip()
         if key:
             machine["ssh_key"] = str(Path(key).expanduser())
+        cur_cp = machine.get("colette_path", "")
+        colette_path = input(
+            f"Path to colette binary on this machine [{cur_cp}] (leave empty to keep): "
+        ).strip()
+        if colette_path:
+            machine["colette_path"] = colette_path
     else:
         machine.pop("host", None)
         machine.pop("ssh_key", None)
+        machine.pop("colette_path", None)
 
     cur_pdir = machine.get("projects_dir", "")
     pdir = input(f"Projects directory [{cur_pdir}]: ").strip() or cur_pdir
@@ -246,7 +270,6 @@ def cmd_config_set_default(args):
 def cmd_config_add_template(args):
     """Add a template source and metadata to a machine."""
     cfg = load_config()
-    templates_cfg = load_templates()
     machine = require_machine(cfg, args.machine_name)
     existing = list_machine_template_names(machine)
     if args.template_name in existing:
@@ -256,6 +279,10 @@ def cmd_config_add_template(args):
 
     template_type = _prompt_template_type()
     source = _prompt_template_source(template_type)
+    if template_type == "directory" and not source.strip():
+        err("template path cannot be empty.")
+    if template_type == "git" and not source.strip():
+        err("template git URL cannot be empty.")
     description = input("Description (optional): ").strip() or None
     params = _parse_params(getattr(args, "params", None) or [])
 
@@ -264,25 +291,24 @@ def cmd_config_add_template(args):
         entry["path"] = source
     else:
         entry["url"] = source
+    if description:
+        entry["description"] = description
+    if params:
+        entry["params"] = params
 
     machine_templates = normalize_machine_templates(machine)
     machine_templates.append(entry)
     machine["templates"] = machine_templates
     save_config(cfg)
 
-    upsert_template_metadata(
-        templates_cfg, args.template_name, description, params or None
-    )
-    save_templates(templates_cfg)
-    scaffold_template_hook_files(args.template_name)
-    info(f"Hook files: {get_template_dir(args.template_name)}")
+    scaffold_template_hook_files(args.template_name, args.machine_name)
+    info(f"Hook files: {get_machine_template_dir(args.machine_name, args.template_name)}")
     info(f"Template '{args.template_name}' added to machine '{args.machine_name}'.")
 
 
 def cmd_config_edit_template(args):
     """Edit a template source and metadata on a machine."""
     cfg = load_config()
-    templates_cfg = load_templates()
     machine = require_machine(cfg, args.machine_name)
     machine_templates = normalize_machine_templates(machine)
     template = next(
@@ -297,22 +323,32 @@ def cmd_config_edit_template(args):
     template_type = _prompt_template_type(current_type)
     current_source = template.get("path") or template.get("url")
     source = _prompt_template_source(template_type, current_source)
-    metadata = next(
-        (
-            item
-            for item in templates_cfg.get("templates", [])
-            if item.get("name") == args.template_name
-        ),
-        {},
-    )
-    description = input(
-        f"Description [{metadata.get('description', '')}]: "
-    ).strip() or metadata.get("description")
+    if template_type == "directory" and not source.strip():
+        err("template path cannot be empty.")
+    if template_type == "git" and not source.strip():
+        err("template git URL cannot be empty.")
+
+    cur_desc = template.get("description") or ""
+    templates_cfg = load_templates()
+    if not cur_desc:
+        legacy_meta = next(
+            (t for t in templates_cfg.get("templates", []) if t.get("name") == args.template_name),
+            {},
+        )
+        cur_desc = legacy_meta.get("description", "")
+    description = input(f"Description [{cur_desc}]: ").strip() or cur_desc or None
+
     raw_params = getattr(args, "params", None)
     if raw_params is not None:
         params = _parse_params(raw_params)
     else:
-        params = metadata.get("params")  # keep existing if not overridden
+        params = template.get("params")
+        if not params:
+            legacy_meta = next(
+                (t for t in templates_cfg.get("templates", []) if t.get("name") == args.template_name),
+                {},
+            )
+            params = legacy_meta.get("params")
 
     template.clear()
     template.update({"name": args.template_name, "type": template_type})
@@ -320,13 +356,15 @@ def cmd_config_edit_template(args):
         template["path"] = source
     else:
         template["url"] = source
+    if description:
+        template["description"] = description
+    if params:
+        template["params"] = params
     machine["templates"] = machine_templates
     save_config(cfg)
 
-    upsert_template_metadata(templates_cfg, args.template_name, description, params)
-    save_templates(templates_cfg)
-    scaffold_template_hook_files(args.template_name)
-    info(f"Hook files: {get_template_dir(args.template_name)}")
+    scaffold_template_hook_files(args.template_name, args.machine_name)
+    info(f"Hook files: {get_machine_template_dir(args.machine_name, args.template_name)}")
     info(f"Template '{args.template_name}' updated on machine '{args.machine_name}'.")
 
 
@@ -336,8 +374,14 @@ def cmd_config_edit_hook(args):
 
     template_name = args.template_name
     hook_name = args.hook_name
-    scaffold_template_hook_files(template_name)
-    hook_path = get_template_hook_path(template_name, hook_name)
+    machine_name = getattr(args, "machine", None)
+    if not machine_name:
+        cfg = load_config()
+        machine_name = cfg.get("default_machine")
+    if not machine_name:
+        err("--machine is required (or set a default machine with 'colette config set-default').")
+    scaffold_template_hook_files(template_name, machine_name)
+    hook_path = get_machine_template_hook_path(machine_name, template_name, hook_name)
     subprocess.run(["nano", str(hook_path)])
 
 
@@ -356,9 +400,11 @@ def cmd_config_edit_project_hook(args):
 
 
 def cmd_config_remove_template(args):
-    """Remove a template from a machine and drop unused metadata."""
+    """Remove a template from a machine."""
+    from colette_cli.utils.config import get_machine_template_dir
+    import shutil
+
     cfg = load_config()
-    templates_cfg = load_templates()
     machine = require_machine(cfg, args.machine_name)
     machine_templates = normalize_machine_templates(machine)
     remaining = [
@@ -372,15 +418,9 @@ def cmd_config_remove_template(args):
     machine["templates"] = remaining
     save_config(cfg)
 
-    still_used = False
-    for other_machine in cfg.get("machines", {}).values():
-        if args.template_name in list_machine_template_names(other_machine):
-            still_used = True
-            break
-    if not still_used:
-        remove_template_metadata(templates_cfg, args.template_name)
-        save_templates(templates_cfg)
-        remove_template_dir(args.template_name)
+    machine_hooks_dir = get_machine_template_dir(args.machine_name, args.template_name)
+    if machine_hooks_dir.exists():
+        shutil.rmtree(str(machine_hooks_dir))
 
     info(f"Template '{args.template_name}' removed from machine '{args.machine_name}'.")
 
@@ -398,14 +438,12 @@ def cmd_config_run_template_update(args):
     is_remote = is_remote_machine(machine)
 
     template_name = args.template_name
-    templates_cfg = load_templates()
-    template_metadata = get_template_metadata(templates_cfg, template_name)
+    template_metadata = get_template_metadata(machine, machine_name, template_name)
 
     from colette_cli.template.registry import get_machine_template
     template_entry = get_machine_template(machine, template_name)
     template_path = (template_entry or {}).get("path")
 
-    scaffold_template_hook_files(template_name)
     run_onupdate_for_template(
         template_name,
         machine,
@@ -416,6 +454,75 @@ def cmd_config_run_template_update(args):
         fail_on_error=True,
     )
     info(f"onupdate ran for template '{template_name}'.")
+
+
+def cmd_config_rename_template(args):
+    """Rename a template on a machine."""
+    cfg = load_config()
+    machine = require_machine(cfg, args.machine_name)
+    machine_templates = normalize_machine_templates(machine)
+    template = next((t for t in machine_templates if t["name"] == args.old_name), None)
+    if not template:
+        err(f"template '{args.old_name}' not found on machine '{args.machine_name}'.")
+    new_name = args.new_name
+    if any(t["name"] == new_name for t in machine_templates):
+        err(f"template '{new_name}' already exists on machine '{args.machine_name}'.")
+
+    template["name"] = new_name
+    machine["templates"] = machine_templates
+    save_config(cfg)
+
+    rename_machine_template_dir(args.machine_name, args.old_name, new_name)
+
+    projects = load_projects()
+    updated = 0
+    for project in projects:
+        if project.get("machine") == args.machine_name and project.get("template") == args.old_name:
+            project["template"] = new_name
+            updated += 1
+    if updated:
+        save_projects(projects)
+
+    info(f"Template '{args.old_name}' renamed to '{new_name}' on machine '{args.machine_name}'.")
+    if updated:
+        info(f"Updated {updated} project(s) to use new template name.")
+
+
+def cmd_config_sync_remote(args):
+    """Sync the local colette binary and config to one or all remote machines."""
+    from colette_cli.utils.ssh import sync_remote_colette, inject_project_config
+    from colette_cli.utils.helpers import is_remote_machine
+
+    cfg = load_config()
+    machine_name = getattr(args, "machine_name", None)
+    machines = cfg.get("machines", {})
+
+    if machine_name:
+        if machine_name not in machines:
+            err(f"machine '{machine_name}' not found.")
+        targets = {machine_name: machines[machine_name]}
+    else:
+        targets = {n: m for n, m in machines.items() if is_remote_machine(m)}
+
+    if not targets:
+        print("No remote machines configured.")
+        return
+
+    for name, machine in targets.items():
+        if not machine.get("colette_path"):
+            print(f"  {name}: no colette_path set, skipping.")
+            continue
+        synced = sync_remote_colette(machine, name)
+        if synced is True:
+            info(f"colette synced to '{name}' at {machine['colette_path']}")
+        elif synced is False:
+            print(f"  {name}: already up to date.")
+        if synced is not None:
+            machine_projects = [p for p in load_projects() if p.get("machine") == name]
+            for project in machine_projects:
+                inject_project_config(machine, name, project)
+            if machine_projects:
+                info(f"Config injected for {len(machine_projects)} project(s) on '{name}'")
 
 
 def cmd_config(args):
@@ -444,5 +551,9 @@ def cmd_config(args):
         cmd_config_remove_machine(args)
     elif args.config_cmd == "set-default":
         cmd_config_set_default(args)
+    elif args.config_cmd == "sync-remote":
+        cmd_config_sync_remote(args)
+    elif args.config_cmd == "rename-template":
+        cmd_config_rename_template(args)
     else:
         args.config_parser.print_help()

@@ -33,13 +33,13 @@ colette_cli/
     state.py               Shared TUI state: stdscr reference, running_jobs list (thread-safe)
     __init__.py            Re-exports cmd_tui
   utils/
-    helpers.py             build_projects_by_machine, filter_projects_by_name
+    config.py              All config file I/O (load/save config.json, projects.json, templates.json, hook files)
+    helpers.py             build_projects_by_machine, filter_projects_by_name, detect_project_from_cwd
     formatting.py          ANSI colours, err() / warn() / info()
     validation.py          validate_project_name / validate_machine_name
     ssh.py                 ssh_run, ssh_interactive
     tmux.py                local_tmux_session, ensure_session, get_sessions, create_tmux_window_with_panes
     notify.py              send_notification(title, body) — desktop notifications (Linux/macOS)
-    env.py                 (environment helpers)
 tests/
   conftest.py              tmp_config fixture + reset_tui_state autouse fixture + shared helpers
   test_utils_config.py
@@ -171,7 +171,64 @@ All state lives under `~/.config/colette/`.
 
 ---
 
-## Checklist — adding a new top-level command
+## Build and remote sync
+
+### Build pipeline
+
+```bash
+# 1. Build the beta zipapp (auto-bumps the patch version in __init__.py and pyproject.toml)
+./scripts/build.sh
+
+# 2. Promote beta to prod when ready to release
+./scripts/build.sh prod
+
+# 3. Install prod binary to PATH for local use
+./scripts/install.sh          # copies build/prod/colette → ~/.local/bin/colette
+```
+
+`build/prod/colette` is the **canonical local binary**. It is the file that gets
+copied to remote machines and the file that `colette --version` reports.
+
+### Automatic remote sync
+
+Every colette command that SSHs to a remote machine automatically:
+
+1. **Syncs the binary** — runs `colette_path --version` on the remote; if the
+   version differs from the local `build/prod/colette`, copies it via SCP and
+   creates the parent directory if needed.
+2. **Syncs the config** — pushes a filtered `~/.config/colette/` snapshot
+   (config.json, projects.json, templates.json, and relevant hook directories)
+   to the remote machine via `tar xzf` over SSH stdin. The local machine is
+   always the source of truth; the remote config is overwritten.
+
+This happens at most once per machine per process invocation (cached in
+`_synced_machines`).
+
+### Status messages
+
+| Outcome | Message |
+|---|---|
+| Binary absent on remote | `✓ Installed colette on '<machine>'` |
+| Binary version differs | `✓ Updated colette on '<machine>'` |
+| Binary already current | `✓ colette on '<machine>' is up to date` |
+
+### For developers
+
+**Before testing against a remote machine**, always build and promote:
+
+```bash
+./scripts/build.sh && ./scripts/build.sh prod
+```
+
+The manual sync command (useful for debugging) is:
+
+```bash
+colette config sync-remote [machine-name]
+```
+
+---
+
+
 
 Follow **every** step. Missing any one step is a bug.
 

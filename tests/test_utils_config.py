@@ -182,7 +182,7 @@ class TestProjectHooks:
         )
 
         scaffold_project_hook_files("proj")
-        for hook in ("oncreate", "onstart", "onstop", "onlogs", "coletterc"):
+        for hook in ("oncreate", "onstart", "onstop", "onlogs", "onupdate", "ondelete", "coletterc"):
             assert project_hook_exists("proj", hook)
             assert 'source "$SUPER"' in read_project_hook("proj", hook)
 
@@ -196,3 +196,69 @@ class TestProjectHooks:
         write_project_hook("proj", "onstart", "custom content")
         scaffold_project_hook_files("proj")
         assert read_project_hook("proj", "onstart") == "custom content"
+
+
+class TestMachineTemplateHooks:
+    def test_get_machine_template_dir(self, tmp_config):
+        from colette_cli.utils.config import get_machine_template_dir
+
+        d = get_machine_template_dir("myhost", "dev")
+        assert str(d).endswith("machines/myhost/templates/dev")
+
+    def test_get_machine_template_hook_path(self, tmp_config):
+        from colette_cli.utils.config import get_machine_template_hook_path
+
+        p = get_machine_template_hook_path("myhost", "dev", "onstart")
+        assert "machines/myhost/templates/dev" in str(p)
+        assert "onstart" in str(p)
+
+    def test_ensure_machine_template_dir_creates(self, tmp_config):
+        from colette_cli.utils.config import ensure_machine_template_dir, get_machine_template_dir
+
+        ensure_machine_template_dir("myhost", "dev")
+        assert get_machine_template_dir("myhost", "dev").exists()
+
+    def test_write_and_read_machine_template_hook(self, tmp_config):
+        from colette_cli.utils.config import write_machine_template_hook, read_machine_template_hook
+
+        write_machine_template_hook("myhost", "dev", "onstart", "#!/usr/bin/env bash\necho hi")
+        content = read_machine_template_hook("myhost", "dev", "onstart")
+        assert "echo hi" in content
+
+    def test_machine_template_hook_exists(self, tmp_config):
+        from colette_cli.utils.config import machine_template_hook_exists, write_machine_template_hook
+
+        assert not machine_template_hook_exists("myhost", "dev", "onstart")
+        write_machine_template_hook("myhost", "dev", "onstart", "content")
+        assert machine_template_hook_exists("myhost", "dev", "onstart")
+
+    def test_read_machine_template_hook_missing_returns_none(self, tmp_config):
+        from colette_cli.utils.config import read_machine_template_hook
+
+        assert read_machine_template_hook("nohost", "dev", "onstart") is None
+
+    def test_get_machine_template_params_found(self):
+        from colette_cli.utils.config import get_machine_template_params
+
+        machine = {"templates": [{"name": "dev", "params": {"PORT": "8080"}}]}
+        params = get_machine_template_params(machine, "dev")
+        assert params == {"PORT": "8080"}
+
+    def test_get_machine_template_params_not_found(self):
+        from colette_cli.utils.config import get_machine_template_params
+
+        machine = {"templates": [{"name": "other", "params": {"PORT": "8080"}}]}
+        params = get_machine_template_params(machine, "dev")
+        assert params == {}
+
+    def test_get_machine_template_params_no_params_key(self):
+        from colette_cli.utils.config import get_machine_template_params
+
+        machine = {"templates": [{"name": "dev"}]}
+        params = get_machine_template_params(machine, "dev")
+        assert params == {}
+
+    def test_get_machine_template_params_empty_machine(self):
+        from colette_cli.utils.config import get_machine_template_params
+
+        assert get_machine_template_params({}, "dev") == {}

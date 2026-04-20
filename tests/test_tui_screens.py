@@ -347,6 +347,27 @@ class TestProjectActionItems:
         logs = next(i for i in self._get_items() if i.label == "Logs")
         assert logs.is_leaf
 
+    def test_open_session_does_not_inject_for_remote(self, tmp_config):
+        """Opening a session on a remote machine must NOT call inject_project_config."""
+        from colette_cli.utils.config import save_config, save_projects
+        remote_cfg = {
+            "machines": {"remote": {"type": "ssh", "host": "myhost"}},
+            "default_machine": "remote",
+        }
+        save_config(remote_cfg)
+        project = make_project("my-proj", machine="remote")
+        save_projects([project])
+
+        items = self._get_items(project)
+        open_item = next(i for i in items if i.label == "Open session")
+
+        with patch("colette_cli.utils.ssh.inject_project_config") as mock_inject, \
+             patch("colette_cli.utils.ssh.ssh_interactive"), \
+             patch("curses.endwin"), patch("curses.doupdate"):
+            open_item.run()
+
+        mock_inject.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # template_action_items
@@ -436,7 +457,7 @@ class TestTemplateActionItems:
     def test_returns_create_edit_hooks_edit_parameters(self, tmp_config):
         from colette_cli.tui.screens import template_action_items
         labels = _item_labels(template_action_items("my-tmpl", "local"))
-        assert labels == ["Create project", "Run update", "Edit hooks", "Edit parameters"]
+        assert labels == ["Create project", "Run update", "Edit hooks", "Edit parameters", "Rename", "Change path"]
 
     def test_edit_hooks_is_submenu(self, tmp_config):
         from colette_cli.tui.screens import template_action_items
@@ -475,96 +496,156 @@ class TestTemplateActionItems:
             create.run()
         mock_create.assert_not_called()
 
+    def test_change_path_updates_config(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.tui.screens import template_action_items
+        save_config({
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": "/tmp/projects",
+                    "templates": [{"name": "my-tmpl", "type": "directory", "path": "/old/path"}],
+                }
+            },
+            "default_machine": "local",
+        })
+        items = template_action_items("my-tmpl", "local")
+        change_path = next(i for i in items if i.label == "Change path")
+        with patch("colette_cli.tui.forms.ask", return_value="/new/path"):
+            change_path.run()
+        cfg = load_config()
+        tmpl = next(t for t in cfg["machines"]["local"]["templates"] if t["name"] == "my-tmpl")
+        assert tmpl["path"] == "/new/path"
+
+    def test_change_path_aborts_on_empty(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.tui.screens import template_action_items
+        save_config({
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": "/tmp/projects",
+                    "templates": [{"name": "my-tmpl", "type": "directory", "path": "/old/path"}],
+                }
+            },
+            "default_machine": "local",
+        })
+        items = template_action_items("my-tmpl", "local")
+        change_path = next(i for i in items if i.label == "Change path")
+        with patch("colette_cli.tui.forms.ask", return_value=""):
+            change_path.run()
+        cfg = load_config()
+        tmpl = next(t for t in cfg["machines"]["local"]["templates"] if t["name"] == "my-tmpl")
+        assert tmpl["path"] == "/old/path"
+
 
 # ---------------------------------------------------------------------------
 # template_param_items
 # ---------------------------------------------------------------------------
 
 class TestTemplateParamItems:
+    """Tests for template_param_items using machine-specific storage."""
+
+    MACHINE_CFG = {
+        "machines": {
+            "local": {
+                "type": "local",
+                "projects_dir": "/tmp/projects",
+                "templates": [{"name": "tmpl", "type": "directory", "path": "/tmpl"}],
+            }
+        },
+        "default_machine": "local",
+    }
+
     def _setup(self, tmp_config, params=None):
-        from colette_cli.utils.config import save_config, save_templates
-        save_config(LOCAL_CFG)
-        save_templates({"templates": [{"name": "tmpl", "params": params or {}}]})
+        import copy
+        from colette_cli.utils.config import save_config
+        cfg = copy.deepcopy(self.MACHINE_CFG)
+        if params:
+            cfg["machines"]["local"]["templates"][0]["params"] = params
+        save_config(cfg)
 
     def test_add_parameter_item_always_present(self, tmp_config):
         from colette_cli.tui.screens import template_param_items
         self._setup(tmp_config)
-        items = template_param_items("tmpl")
+        items = template_param_items("tmpl", "local")
         assert items[0].label == "Add parameter"
         assert items[0].is_leaf
 
     def test_no_params_shows_placeholder(self, tmp_config):
         from colette_cli.tui.screens import template_param_items
         self._setup(tmp_config)
-        labels = _item_labels(template_param_items("tmpl"))
+        labels = _item_labels(template_param_items("tmpl", "local"))
         assert "(no parameters)" in labels
 
     def test_existing_params_appear(self, tmp_config):
         from colette_cli.tui.screens import template_param_items
         self._setup(tmp_config, params={"PORT": "8080", "ENV": "dev"})
-        labels = _item_labels(template_param_items("tmpl"))
+        labels = _item_labels(template_param_items("tmpl", "local"))
         assert "PORT" in labels
         assert "ENV" in labels
 
     def test_param_item_shows_value_as_detail(self, tmp_config):
         from colette_cli.tui.screens import template_param_items
         self._setup(tmp_config, params={"PORT": "8080"})
-        port_item = next(i for i in template_param_items("tmpl") if i.label == "PORT")
+        port_item = next(i for i in template_param_items("tmpl", "local") if i.label == "PORT")
         assert port_item.detail == "8080"
 
     def test_param_item_has_edit_and_remove_children(self, tmp_config):
         from colette_cli.tui.screens import template_param_items
         self._setup(tmp_config, params={"PORT": "8080"})
-        port_item = next(i for i in template_param_items("tmpl") if i.label == "PORT")
+        port_item = next(i for i in template_param_items("tmpl", "local") if i.label == "PORT")
         assert not port_item.is_leaf
         child_labels = _item_labels(port_item.get_children())
         assert "Edit value" in child_labels
         assert "Remove" in child_labels
 
-    def test_add_parameter_saves_to_metadata(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_templates, load_templates
+    def test_add_parameter_saves_to_machine_config(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
         from colette_cli.tui.screens import template_param_items
-        save_config(LOCAL_CFG)
-        save_templates({"templates": [{"name": "tmpl"}]})
-        items = template_param_items("tmpl")
+        self._setup(tmp_config)
+        items = template_param_items("tmpl", "local")
         with patch("colette_cli.tui.forms.ask", side_effect=["MYKEY", "myval"]):
             items[0].run()  # Add parameter
-        tmpl = next(t for t in load_templates()["templates"] if t["name"] == "tmpl")
+        cfg = load_config()
+        tmpl = next(t for t in cfg["machines"]["local"]["templates"] if t["name"] == "tmpl")
         assert tmpl.get("params", {}).get("MYKEY") == "myval"
 
     def test_add_parameter_aborts_on_empty_key(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_templates, load_templates
+        from colette_cli.utils.config import load_config
         from colette_cli.tui.screens import template_param_items
-        save_config(LOCAL_CFG)
-        save_templates({"templates": [{"name": "tmpl"}]})
-        items = template_param_items("tmpl")
+        self._setup(tmp_config)
+        items = template_param_items("tmpl", "local")
         with patch("colette_cli.tui.forms.ask", return_value=None):
             items[0].run()
-        tmpl = next(t for t in load_templates()["templates"] if t["name"] == "tmpl")
+        cfg = load_config()
+        tmpl = next(t for t in cfg["machines"]["local"]["templates"] if t["name"] == "tmpl")
         assert not tmpl.get("params")
 
-    def test_remove_parameter_deletes_from_metadata(self, tmp_config):
-        from colette_cli.utils.config import load_templates
+    def test_remove_parameter_deletes_from_machine_config(self, tmp_config):
+        from colette_cli.utils.config import load_config
         from colette_cli.tui.screens import template_param_items
         self._setup(tmp_config, params={"PORT": "8080"})
-        items = template_param_items("tmpl")
+        items = template_param_items("tmpl", "local")
         port_item = next(i for i in items if i.label == "PORT")
         remove_item = next(i for i in port_item.get_children() if i.label == "Remove")
         with patch("colette_cli.tui.forms.confirm", return_value=True):
             remove_item.run()
-        tmpl = next(t for t in load_templates()["templates"] if t["name"] == "tmpl")
+        cfg = load_config()
+        tmpl = next(t for t in cfg["machines"]["local"]["templates"] if t["name"] == "tmpl")
         assert "PORT" not in (tmpl.get("params") or {})
 
-    def test_edit_parameter_updates_value(self, tmp_config):
-        from colette_cli.utils.config import load_templates
+    def test_edit_parameter_updates_machine_config(self, tmp_config):
+        from colette_cli.utils.config import load_config
         from colette_cli.tui.screens import template_param_items
         self._setup(tmp_config, params={"PORT": "8080"})
-        items = template_param_items("tmpl")
+        items = template_param_items("tmpl", "local")
         port_item = next(i for i in items if i.label == "PORT")
         edit_item = next(i for i in port_item.get_children() if i.label == "Edit value")
         with patch("colette_cli.tui.forms.ask", return_value="9090"):
             edit_item.run()
-        tmpl = next(t for t in load_templates()["templates"] if t["name"] == "tmpl")
+        cfg = load_config()
+        tmpl = next(t for t in cfg["machines"]["local"]["templates"] if t["name"] == "tmpl")
         assert tmpl["params"]["PORT"] == "9090"
 
 
@@ -636,9 +717,9 @@ class TestMachineListItems:
         from colette_cli.utils.config import load_config
         from colette_cli.tui.screens import machine_list_items
         items = machine_list_items()
-        # name, type=ssh, host, key (empty → skip), no initial template, projects_dir, no set-default
+        # name, type=ssh, host, port (empty → skip), key (empty → skip), colette_path (empty → skip), no initial template, projects_dir, no set-default
         with patch("colette_cli.tui.forms.ask",
-                   side_effect=["sshm", "ssh", "dev@myhost", "", "", "/projects"]), \
+                   side_effect=["sshm", "ssh", "dev@myhost", "", "", "", "", "/projects"]), \
              patch("colette_cli.tui.forms.confirm", return_value=False):
             next(i for i in items if i.label == "Add machine").run()
         cfg = load_config()
@@ -647,7 +728,21 @@ class TestMachineListItems:
         assert m["type"] == "ssh"
         assert m["host"] == "dev@myhost"
         assert "ssh_key" not in m
+        assert "port" not in m
         assert m["projects_dir"] == "/projects"
+
+    def test_add_machine_creates_ssh_machine_with_port(self, tmp_config):
+        from colette_cli.utils.config import load_config
+        from colette_cli.tui.screens import machine_list_items
+        items = machine_list_items()
+        # name, type=ssh, host, port=24, key (empty → skip), colette_path (empty → skip), no initial template, projects_dir, no set-default
+        with patch("colette_cli.tui.forms.ask",
+                   side_effect=["sshm", "ssh", "dev@myhost", "24", "", "", "", "/projects"]), \
+             patch("colette_cli.tui.forms.confirm", return_value=False):
+            next(i for i in items if i.label == "Add machine").run()
+        cfg = load_config()
+        m = cfg["machines"]["sshm"]
+        assert m["port"] == 24
 
 
 class TestMachineActionItems:
@@ -742,6 +837,161 @@ class TestMachineActionItems:
             next(i for i in items if i.label == "Edit").run()
         # ask should never be called — the machine was not found
         mock_ask.assert_not_called()
+
+    def test_has_set_colette_path_action(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        save_config({
+            "machines": {"remote": {"type": "ssh", "host": "user@server", "projects_dir": "/projects"}},
+            "default_machine": "remote",
+        })
+        from colette_cli.tui.screens import machine_action_items
+        labels = _item_labels(machine_action_items("remote"))
+        assert "Set colette path" in labels
+
+    def test_set_colette_path_not_shown_for_local_machine(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        save_config(LOCAL_CFG)
+        from colette_cli.tui.screens import machine_action_items
+        labels = _item_labels(machine_action_items("local"))
+        assert "Set colette path" not in labels
+
+    def test_set_colette_path_saves_to_config(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        save_config({
+            "machines": {
+                "remote": {
+                    "type": "ssh",
+                    "host": "user@server",
+                    "projects_dir": "/projects",
+                }
+            },
+            "default_machine": "remote",
+        })
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("remote")
+        set_path = next(i for i in items if i.label == "Set colette path")
+        with patch("colette_cli.tui.forms.ask", return_value="/usr/local/bin/colette"):
+            set_path.run()
+        cfg = load_config()
+        assert cfg["machines"]["remote"]["colette_path"] == "/usr/local/bin/colette"
+
+    def test_set_colette_path_clears_on_empty(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        save_config({
+            "machines": {
+                "remote": {
+                    "type": "ssh",
+                    "host": "user@server",
+                    "projects_dir": "/projects",
+                    "colette_path": "/old/colette",
+                }
+            },
+            "default_machine": "remote",
+        })
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("remote")
+        set_path = next(i for i in items if i.label == "Set colette path")
+        with patch("colette_cli.tui.forms.ask", return_value=""):
+            set_path.run()
+        cfg = load_config()
+        assert "colette_path" not in cfg["machines"]["remote"]
+
+    def test_set_colette_path_skips_local_machine(self, tmp_config):
+        # "Set colette path" must not appear in local machine items at all
+        from colette_cli.utils.config import save_config
+        save_config(LOCAL_CFG)
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("local")
+        assert not any(i.label == "Set colette path" for i in items)
+
+    def test_has_sync_colette_action(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        save_config({
+            "machines": {"remote": {"type": "ssh", "host": "user@server", "projects_dir": "/projects"}},
+            "default_machine": "remote",
+        })
+        from colette_cli.tui.screens import machine_action_items
+        labels = _item_labels(machine_action_items("remote"))
+        assert "Sync colette" in labels
+
+    def test_sync_colette_calls_sync_remote(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects
+        save_config({
+            "machines": {
+                "remote": {
+                    "type": "ssh",
+                    "host": "user@server",
+                    "projects_dir": "/projects",
+                    "colette_path": "/usr/local/bin/colette",
+                }
+            },
+            "default_machine": "remote",
+        })
+        save_projects([make_project("proj-a", machine="remote"), make_project("proj-b", machine="remote")])
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("remote")
+        sync_item = next(i for i in items if i.label == "Sync colette")
+        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True) as mock_sync, \
+             patch("colette_cli.utils.ssh.inject_project_config") as mock_inject, \
+             patch("colette_cli.tui.screens._async_popup", side_effect=lambda fn, lbl: fn) as mock_popup:
+            sync_item.run()
+        mock_popup.assert_called_once()
+        mock_sync.assert_called_once()
+        call_args = mock_sync.call_args
+        assert call_args[0][0]["host"] == "user@server"
+        assert call_args[0][1] == "remote"
+        assert mock_inject.call_count == 2
+        injected_names = {c[0][2]["name"] for c in mock_inject.call_args_list}
+        assert injected_names == {"proj-a", "proj-b"}
+
+    def test_sync_colette_skips_local_machine(self, tmp_config):
+        # "Sync colette" must not appear in local machine items at all
+        from colette_cli.utils.config import save_config
+        save_config(LOCAL_CFG)
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("local")
+        assert not any(i.label == "Sync colette" for i in items)
+
+    def test_sync_colette_warns_when_no_colette_path(self, tmp_config, capsys):
+        from colette_cli.utils.config import save_config
+        save_config({
+            "machines": {
+                "remote": {
+                    "type": "ssh",
+                    "host": "user@server",
+                    "projects_dir": "/projects",
+                }
+            },
+            "default_machine": "remote",
+        })
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("remote")
+        sync_item = next(i for i in items if i.label == "Sync colette")
+        with patch("colette_cli.utils.ssh.sync_remote_colette") as mock_sync:
+            sync_item.run()
+        mock_sync.assert_not_called()
+        assert "colette_path" in capsys.readouterr().out
+    def test_sync_colette_raises_on_sync_failure(self, tmp_config):
+        """When sync_remote_colette returns None (scp error), _do_sync raises RuntimeError."""
+        from colette_cli.utils.config import save_config
+        save_config({
+            "machines": {
+                "remote": {
+                    "type": "ssh",
+                    "host": "user@server",
+                    "projects_dir": "/projects",
+                    "colette_path": "/usr/local/bin/colette",
+                }
+            },
+            "default_machine": "remote",
+        })
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("remote")
+        sync_item = next(i for i in items if i.label == "Sync colette")
+        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=None), \
+             patch("colette_cli.tui.screens._async_popup", side_effect=lambda fn, lbl: fn):
+            with pytest.raises(RuntimeError, match="sync failed"):
+                sync_item.run()
 
 
 # ---------------------------------------------------------------------------
@@ -1183,3 +1433,120 @@ class TestNotificationsScreen:
         assert state.notifications[0].seen is False
         notifications_screen_items()
         assert state.notifications[0].seen is True
+
+
+# ---------------------------------------------------------------------------
+# template_hook_items — machine-specific paths
+# ---------------------------------------------------------------------------
+
+class TestTemplateHookItemsMachineSpecific:
+    CFG = {
+        "machines": {
+            "remote": {
+                "type": "ssh",
+                "host": "10.0.0.1",
+                "projects_dir": "/projects",
+                "templates": [{"name": "dev", "type": "directory", "path": "/tmpl"}],
+            }
+        },
+        "default_machine": "remote",
+    }
+
+    def test_uses_machine_specific_paths(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.tui.screens import template_hook_items
+        save_config(self.CFG)
+        items = template_hook_items("dev", "remote")
+        for item in items:
+            assert "machines/remote/templates/dev" in item.detail
+
+    def test_template_action_items_passes_machine_to_hooks(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.tui.screens import template_action_items
+        save_config(self.CFG)
+        items = template_action_items("dev", "remote")
+        edit_hooks = next(i for i in items if i.label == "Edit hooks")
+        hook_items = edit_hooks.get_children()
+        for hi in hook_items:
+            assert "machines/remote/templates/dev" in hi.detail
+
+    def test_template_action_items_passes_machine_to_params(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.tui.screens import template_action_items
+        save_config(self.CFG)
+        items = template_action_items("dev", "remote")
+        edit_params = next(i for i in items if i.label == "Edit parameters")
+        # Just verify it resolves without error
+        param_items = edit_params.get_children()
+        assert any(i.label == "Add parameter" for i in param_items)
+
+
+# ---------------------------------------------------------------------------
+# template_param_items — machine-specific params
+# ---------------------------------------------------------------------------
+
+class TestTemplateParamItemsMachineSpecific:
+    CFG = {
+        "machines": {
+            "remote": {
+                "type": "ssh",
+                "host": "10.0.0.1",
+                "projects_dir": "/projects",
+                "templates": [{"name": "dev", "type": "directory", "path": "/tmpl", "params": {"PORT": "8080"}}],
+            }
+        },
+        "default_machine": "remote",
+    }
+
+    def test_reads_machine_params(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.tui.screens import template_param_items
+        save_config(self.CFG)
+        items = template_param_items("dev", "remote")
+        labels = [i.label for i in items]
+        assert "PORT" in labels
+
+    def test_does_not_show_shared_params(self, tmp_config):
+        """Machine-specific view does not show shared template params."""
+        from colette_cli.utils.config import save_config, save_templates
+        from colette_cli.tui.screens import template_param_items
+        save_config(self.CFG)
+        save_templates({"templates": [{"name": "dev", "params": {"SHARED": "yes"}}]})
+        items = template_param_items("dev", "remote")
+        labels = [i.label for i in items]
+        assert "SHARED" not in labels
+        assert "PORT" in labels
+
+    def test_saves_to_machine_config(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.tui.screens import template_param_items
+        save_config(self.CFG)
+        items = template_param_items("dev", "remote")
+        port_item = next(i for i in items if i.label == "PORT")
+        edit_item = next(i for i in port_item.get_children() if i.label == "Edit value")
+        with patch("colette_cli.tui.forms.ask", return_value="9090"):
+            edit_item.run()
+        cfg = load_config()
+        tmpl = next(t for t in cfg["machines"]["remote"]["templates"] if t["name"] == "dev")
+        assert tmpl["params"]["PORT"] == "9090"
+
+    def test_saves_new_param_to_machine_config(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.tui.screens import template_param_items
+        cfg = {
+            "machines": {
+                "remote": {
+                    "type": "ssh", "host": "10.0.0.1", "projects_dir": "/projects",
+                    "templates": [{"name": "dev", "type": "directory", "path": "/tmpl"}],
+                }
+            },
+            "default_machine": "remote",
+        }
+        save_config(cfg)
+        items = template_param_items("dev", "remote")
+        add_item = next(i for i in items if i.label == "Add parameter")
+        with patch("colette_cli.tui.forms.ask", side_effect=["HOST", "myhost"]):
+            add_item.run()
+        cfg = load_config()
+        tmpl = next(t for t in cfg["machines"]["remote"]["templates"] if t["name"] == "dev")
+        assert tmpl["params"]["HOST"] == "myhost"

@@ -12,7 +12,10 @@ from .commands import (
     cmd_config_list_templates,
     cmd_config_remove_machine,
     cmd_config_remove_template,
+    cmd_config_rename_template,
+    cmd_config_run_template_update,
     cmd_config_set_default,
+    cmd_config_sync_remote,
 )
 
 __all__ = [
@@ -27,5 +30,8 @@ __all__ = [
     "cmd_config_list_templates",
     "cmd_config_remove_machine",
     "cmd_config_remove_template",
+    "cmd_config_rename_template",
+    "cmd_config_run_template_update",
     "cmd_config_set_default",
+    "cmd_config_sync_remote",
 ]

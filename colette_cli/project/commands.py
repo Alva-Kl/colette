@@ -18,7 +18,6 @@ from colette_cli.utils.config import (
     get_project,
     load_config,
     load_projects,
-    load_templates,
     require_machine,
     save_projects,
 )
@@ -87,7 +86,11 @@ def cmd_create(args):
             )
 
     template_source = get_machine_template(machine, template_name)
-    template_metadata = get_template_metadata(load_templates(), template_name)
+    if template_source["type"] == "directory" and not (template_source.get("path") or "").strip():
+        err(f"template '{template_name}' has no source path configured.")
+    if template_source["type"] == "git" and not (template_source.get("url") or "").strip():
+        err(f"template '{template_name}' has no git URL configured.")
+    template_metadata = get_template_metadata(machine, machine_name, template_name)
 
     is_remote = is_remote_machine(machine)
     project_path = str(Path(projects_dir) / name)
@@ -179,10 +182,30 @@ def cmd_delete(args, skip_confirmation: bool = False):
 
     cfg = load_config()
     machine = get_machine(cfg, project["machine"])
+    machine_name = project["machine"]
     is_remote = is_remote_machine(machine)
+    template_metadata = get_template_metadata(machine, machine_name, get_project_template_name(project))
+
+    run_template_hook(
+        project,
+        machine,
+        machine_name,
+        is_remote,
+        template_metadata,
+        "ondelete",
+        fail_on_error=False,
+    )
 
     if is_remote:
-        result = ssh_run(machine, f"rm -rf {project['path']}")
+        remote_path = project.get("path", "").strip()
+        if not remote_path:
+            err("refusing to delete: project path is empty")
+        if not remote_path.startswith("/"):
+            err(f"refusing to delete: remote path is not absolute: '{remote_path}'")
+        parts = [p for p in remote_path.split("/") if p]
+        if len(parts) < 3:
+            err(f"refusing to delete: remote path is too shallow (must have at least 3 components): '{remote_path}'")
+        result = ssh_run(machine, f"rm -rf {shlex.quote(remote_path)}")
         if result.returncode != 0:
             err(f"failed to remove remote directory: {result.stderr.strip()}")
     else:
@@ -223,13 +246,13 @@ def cmd_attach(args):
     machine = get_machine(cfg, project["machine"])
     is_remote = is_remote_machine(machine)
     template_name = get_project_template_name(project)
-    template_metadata = get_template_metadata(load_templates(), template_name)
+    template_metadata = get_template_metadata(machine, project["machine"], template_name)
     startup_command = build_project_bootstrap(
         project, project["machine"], template_metadata, is_remote
     )
 
     tmux_cmd = (
-        f"tmux new-session -A -s {shlex.quote(name)} -c {shlex.quote(project['path'])} "
+        f"tmux set-option -g mouse on \\; new-session -A -s {shlex.quote(name)} -c {shlex.quote(project['path'])} "
         f"bash -lc {shlex.quote(startup_command)}"
     )
 
@@ -280,14 +303,14 @@ def _open_copilot_session(name, project_path, machine=None, is_remote=False):
 
     if tmux_session_name in sessions:
         if is_remote:
-            ssh_interactive(machine, f"tmux attach-session -t {shlex.quote(tmux_session_name)}")
+            ssh_interactive(machine, f"tmux set-option -g mouse on \\; attach-session -t {shlex.quote(tmux_session_name)}")
         else:
             local_tmux_session(tmux_session_name, project_path, "exec bash")
     else:
         if is_remote:
             tmux_cmd = (
-                f"tmux new-session -A -s {shlex.quote(tmux_session_name)} "
-                f"-c {shlex.quote(project_path)} copilot"
+                f"tmux set-option -g mouse on \\; new-session -A -s {shlex.quote(tmux_session_name)} "
+                f"-c {shlex.quote(project_path)} bash -lc copilot"
             )
             ssh_interactive(machine, tmux_cmd)
         else:

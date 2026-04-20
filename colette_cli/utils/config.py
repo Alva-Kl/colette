@@ -10,6 +10,7 @@ PROJECTS_FILE = CONFIG_DIR / "projects.json"
 TEMPLATES_FILE = CONFIG_DIR / "templates.json"
 TEMPLATE_SCRIPTS_DIR = CONFIG_DIR / "templates"
 PROJECT_HOOKS_DIR = CONFIG_DIR / "projects"
+MACHINE_SCRIPTS_DIR = CONFIG_DIR / "machines"
 HOOK_FAILURES_FILE = CONFIG_DIR / "hook-failures.json"
 _MAX_HOOK_FAILURES = 200
 TEMPLATE_HOOK_FILENAMES = {
@@ -18,6 +19,7 @@ TEMPLATE_HOOK_FILENAMES = {
     "onstop": ".onstop",
     "onlogs": ".onlogs",
     "onupdate": ".onupdate",
+    "ondelete": ".ondelete",
     "coletterc": ".coletterc",
 }
 
@@ -240,3 +242,92 @@ def clear_hook_failures():
     """Clear the hook failure log."""
     ensure_config_dir()
     HOOK_FAILURES_FILE.write_text("[]\n")
+
+
+# ---------------------------------------------------------------------------
+# Machine-specific template hook helpers
+# ---------------------------------------------------------------------------
+
+def get_machine_template_dir(machine_name, template_name):
+    """Return the hook directory for a template override on a specific machine."""
+    return MACHINE_SCRIPTS_DIR / machine_name / "templates" / template_name
+
+
+def ensure_machine_template_dir(machine_name, template_name):
+    """Ensure a machine-specific template hook directory exists and return it."""
+    d = get_machine_template_dir(machine_name, template_name)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_machine_template_hook_path(machine_name, template_name, hook_name):
+    """Return the path of a machine-specific template hook file."""
+    filename = TEMPLATE_HOOK_FILENAMES[hook_name]
+    return get_machine_template_dir(machine_name, template_name) / filename
+
+
+def machine_template_hook_exists(machine_name, template_name, hook_name):
+    """Return whether a machine-specific template hook file exists."""
+    return get_machine_template_hook_path(machine_name, template_name, hook_name).exists()
+
+
+def read_machine_template_hook(machine_name, template_name, hook_name):
+    """Read a machine-specific template hook file if present."""
+    hook_path = get_machine_template_hook_path(machine_name, template_name, hook_name)
+    if not hook_path.exists():
+        return None
+    return hook_path.read_text()
+
+
+def write_machine_template_hook(machine_name, template_name, hook_name, content):
+    """Write a machine-specific template hook file and make it executable."""
+    d = ensure_machine_template_dir(machine_name, template_name)
+    hook_path = d / TEMPLATE_HOOK_FILENAMES[hook_name]
+    hook_path.write_text(content)
+    mode = 0o755 if hook_name != "coletterc" else 0o644
+    os.chmod(hook_path, mode)
+    return hook_path
+
+
+def get_machine_template_params(machine, template_name):
+    """Return machine-specific params for a template, or an empty dict."""
+    for tmpl in machine.get("templates") or []:
+        if tmpl.get("name") == template_name:
+            return dict(tmpl.get("params") or {})
+    return {}
+
+
+def upsert_machine_template_entry(cfg, machine_name, template_name, description=None, params=None):
+    """Write description/params into a machine's template entry in config.json."""
+    machine = cfg.get("machines", {}).get(machine_name)
+    if not machine:
+        return cfg
+    templates = machine.setdefault("templates", [])
+    for t in templates:
+        if t.get("name") == template_name:
+            if description is not None:
+                if description:
+                    t["description"] = description
+                else:
+                    t.pop("description", None)
+            if params is not None:
+                if params:
+                    t["params"] = params
+                else:
+                    t.pop("params", None)
+            return cfg
+    entry = {"name": template_name}
+    if description:
+        entry["description"] = description
+    if params:
+        entry["params"] = params
+    templates.append(entry)
+    return cfg
+
+
+def rename_machine_template_dir(machine_name, old_name, new_name):
+    """Rename the machine-specific template hook directory."""
+    old_dir = get_machine_template_dir(machine_name, old_name)
+    new_dir = get_machine_template_dir(machine_name, new_name)
+    if old_dir.exists() and not new_dir.exists():
+        old_dir.rename(new_dir)

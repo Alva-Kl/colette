@@ -43,14 +43,22 @@ class TestResolveHookWithSuper:
         content, super_path = _resolve_hook_with_super("proj", "tmpl", "onstart")
         assert "echo proj" in content
 
-    def test_sets_super_path_when_project_override_active(self, tmp_config):
-        from colette_cli.utils.config import write_project_hook
+    def test_super_path_set_when_template_hook_exists(self, tmp_config):
+        from colette_cli.utils.config import write_project_hook, write_template_hook
         from colette_cli.template.executor import _resolve_hook_with_super
         write_project_hook("proj", "onstart", "#!/usr/bin/env bash\necho proj")
+        write_template_hook("tmpl", "onstart", "#!/usr/bin/env bash\necho tmpl")
         _content, super_path = _resolve_hook_with_super("proj", "tmpl", "onstart")
         assert super_path is not None
         assert "tmpl" in str(super_path)
         assert "onstart" in str(super_path)
+
+    def test_super_path_none_when_no_template_hook(self, tmp_config):
+        from colette_cli.utils.config import write_project_hook
+        from colette_cli.template.executor import _resolve_hook_with_super
+        write_project_hook("proj", "onstart", "#!/usr/bin/env bash\necho proj")
+        _content, super_path = _resolve_hook_with_super("proj", "tmpl", "onstart")
+        assert super_path is None
 
     def test_no_super_path_when_using_template_hook(self, tmp_config):
         from colette_cli.utils.config import write_template_hook
@@ -645,3 +653,49 @@ class TestSuperRemote:
         result = build_project_bootstrap(project, "remote1", {"name": "t"}, is_remote=True)
         # Must not contain the local config path in the bootstrap string
         assert ".config/colette" not in result
+
+
+class TestMachineSpecificHookResolution:
+    def test_machine_hook_takes_precedence_over_shared_when_effective(self, tmp_config, tmp_path):
+        """Machine-template hook is used instead of shared template hook."""
+        from colette_cli.utils.config import write_template_hook, write_machine_template_hook
+        from colette_cli.template.executor import run_template_hook
+
+        marker = tmp_path / "result.txt"
+        write_template_hook("dev", "onstart", f"#!/usr/bin/env bash\necho shared > {marker}")
+        write_machine_template_hook("myhost", "dev", "onstart", f"#!/usr/bin/env bash\necho machine > {marker}")
+
+        project = {"name": "proj", "path": str(tmp_path), "machine": "myhost", "template": "dev"}
+        run_template_hook(project, {}, "myhost", False, {"name": "dev"}, "onstart")
+        assert marker.read_text().strip() == "machine"
+
+    def test_falls_back_to_shared_when_machine_hook_not_effective(self, tmp_config, tmp_path):
+        """Falls back to shared template hook when machine hook has no effective content."""
+        from colette_cli.utils.config import write_template_hook, write_machine_template_hook
+        from colette_cli.template.executor import run_template_hook
+
+        marker = tmp_path / "result.txt"
+        write_template_hook("dev", "onstart", f"#!/usr/bin/env bash\necho shared > {marker}")
+        # Only shebang + comment — not effective
+        write_machine_template_hook("myhost", "dev", "onstart", "#!/usr/bin/env bash\n# empty\n")
+
+        project = {"name": "proj", "path": str(tmp_path), "machine": "myhost", "template": "dev"}
+        run_template_hook(project, {}, "myhost", False, {"name": "dev"}, "onstart")
+        assert marker.read_text().strip() == "shared"
+
+    def test_machine_params_override_shared_params(self, tmp_config, tmp_path):
+        """Machine-specific params override shared template params in the environment."""
+        from colette_cli.utils.config import write_template_hook
+        from colette_cli.template.executor import run_template_hook
+
+        marker = tmp_path / "param.txt"
+        write_template_hook("dev", "onstart", f"#!/usr/bin/env bash\necho $COLETTE_PARAM_PORT > {marker}")
+
+        project = {"name": "proj", "path": str(tmp_path), "machine": "myhost", "template": "dev"}
+        # shared params: PORT=9000, machine params: PORT=8080
+        template_metadata = {"name": "dev", "params": {"PORT": "9000"}}
+        machine = {"type": "local", "projects_dir": str(tmp_path), "templates": [
+            {"name": "dev", "params": {"PORT": "8080"}},
+        ]}
+        run_template_hook(project, machine, "myhost", False, template_metadata, "onstart")
+        assert marker.read_text().strip() == "8080"

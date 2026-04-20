@@ -46,6 +46,40 @@ class TestCmdConfigList:
         cmd_config_list(MagicMock())
         assert "local" in capsys.readouterr().out
 
+    def test_shows_colette_path_for_ssh_machine(self, tmp_config, capsys):
+        from colette_cli.utils.config import save_config
+        from colette_cli.config.commands import cmd_config_list
+        cfg = {
+            "machines": {
+                "remote": {
+                    "type": "ssh",
+                    "host": "user@host",
+                    "projects_dir": "/home/user/projects",
+                    "colette_path": "/home/user/bin/colette",
+                }
+            }
+        }
+        save_config(cfg)
+        cmd_config_list(MagicMock())
+        out = capsys.readouterr().out
+        assert "/home/user/bin/colette" in out
+
+    def test_shows_not_set_when_colette_path_missing(self, tmp_config, capsys):
+        from colette_cli.utils.config import save_config
+        from colette_cli.config.commands import cmd_config_list
+        cfg = {
+            "machines": {
+                "remote": {
+                    "type": "ssh",
+                    "host": "user@host",
+                    "projects_dir": "/home/user/projects",
+                }
+            }
+        }
+        save_config(cfg)
+        cmd_config_list(MagicMock())
+        assert "(not set)" in capsys.readouterr().out
+
 
 class TestCmdConfigSetDefault:
     def test_sets_default_machine(self, tmp_config):
@@ -209,10 +243,10 @@ class TestCmdConfigDispatch:
 class TestCmdConfigRunTemplateUpdate:
     def test_runs_onupdate_for_template(self, tmp_config, tmp_path):
         """cmd_config_run_template_update executes the template onupdate hook."""
-        from colette_cli.utils.config import save_config, write_template_hook
+        from colette_cli.utils.config import save_config, write_machine_template_hook
         from colette_cli.config.commands import cmd_config_run_template_update
         marker = tmp_path / "marker.txt"
-        write_template_hook("tmpl", "onupdate", f"#!/usr/bin/env bash\necho updated > {marker}")
+        write_machine_template_hook("local", "tmpl", "onupdate", f"#!/usr/bin/env bash\necho updated > {marker}")
         save_config({
             "machines": {
                 "local": {
@@ -243,3 +277,123 @@ class TestCmdConfigRunTemplateUpdate:
             args.config_cmd = "run-template-update"
             cmd_config(args)
         mock_fn.assert_called_once_with(args)
+
+    def test_opens_machine_specific_hook_when_machine_flag_given(self, tmp_config):
+        from colette_cli.config.commands import cmd_config_edit_hook
+        args = MagicMock(template_name="tmpl", hook_name="onstart", machine="remote")
+        with patch("subprocess.run") as mock_run:
+            cmd_config_edit_hook(args)
+        mock_run.assert_called_once()
+        cmd_args = mock_run.call_args[0][0]
+        assert cmd_args[0] == "nano"
+        assert "machines/remote/templates/tmpl" in cmd_args[1]
+
+    def test_uses_default_machine_when_no_machine_flag(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.config.commands import cmd_config_edit_hook
+        save_config(LOCAL_CFG)
+        args = MagicMock(template_name="tmpl", hook_name="onstart", machine=None)
+        with patch("subprocess.run") as mock_run:
+            cmd_config_edit_hook(args)
+        cmd_args = mock_run.call_args[0][0]
+        assert "machines/local/templates/tmpl" in cmd_args[1]
+
+
+class TestCmdConfigSyncRemote:
+    _REMOTE_CFG = {
+        "machines": {
+            "myremote": {
+                "type": "ssh",
+                "host": "user@remotehost",
+                "colette_path": "/home/user/scripts/colette",
+                "projects_dir": "/home/user/projects",
+            }
+        },
+        "default_machine": "myremote",
+    }
+
+    def test_prints_synced_on_success(self, tmp_config, capsys):
+        from colette_cli.utils.config import save_config
+        from colette_cli.config.commands import cmd_config_sync_remote
+        save_config(self._REMOTE_CFG)
+        args = MagicMock(machine_name=None)
+        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True):
+            cmd_config_sync_remote(args)
+        out = capsys.readouterr().out
+        assert "synced" in out and "myremote" in out
+
+    def test_prints_up_to_date_when_not_synced(self, tmp_config, capsys):
+        from colette_cli.utils.config import save_config
+        from colette_cli.config.commands import cmd_config_sync_remote
+        save_config(self._REMOTE_CFG)
+        args = MagicMock(machine_name=None)
+        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=False):
+            cmd_config_sync_remote(args)
+        out = capsys.readouterr().out
+        assert "up to date" in out
+
+    def test_silent_when_sync_returns_none(self, tmp_config, capsys):
+        from colette_cli.utils.config import save_config
+        from colette_cli.config.commands import cmd_config_sync_remote
+        save_config(self._REMOTE_CFG)
+        args = MagicMock(machine_name=None)
+        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=None):
+            cmd_config_sync_remote(args)
+        out = capsys.readouterr().out
+        assert "synced" not in out and "up to date" not in out
+
+    def test_skips_machine_with_no_colette_path(self, tmp_config, capsys):
+        from colette_cli.utils.config import save_config
+        from colette_cli.config.commands import cmd_config_sync_remote
+        cfg = {
+            "machines": {
+                "myremote": {
+                    "type": "ssh",
+                    "host": "user@remotehost",
+                    "projects_dir": "/home/user/projects",
+                }
+            }
+        }
+        save_config(cfg)
+        args = MagicMock(machine_name=None)
+        with patch("colette_cli.utils.ssh.sync_remote_colette") as mock_sync:
+            cmd_config_sync_remote(args)
+        mock_sync.assert_not_called()
+        assert "no colette_path set" in capsys.readouterr().out
+
+    def test_exits_when_named_machine_not_found(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.config.commands import cmd_config_sync_remote
+        save_config(self._REMOTE_CFG)
+        args = MagicMock(machine_name="ghost")
+        with pytest.raises(SystemExit):
+            cmd_config_sync_remote(args)
+
+    def test_injects_project_config_for_each_project(self, tmp_config, capsys):
+        """sync-remote must call inject_project_config for each project on the machine."""
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.config.commands import cmd_config_sync_remote
+        save_config(self._REMOTE_CFG)
+        save_projects([
+            make_project("proj-a", machine="myremote"),
+            make_project("proj-b", machine="myremote"),
+        ])
+        args = MagicMock(machine_name=None)
+        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True), \
+             patch("colette_cli.utils.ssh.inject_project_config") as mock_inject:
+            cmd_config_sync_remote(args)
+        assert mock_inject.call_count == 2
+        injected_names = {c[0][2]["name"] for c in mock_inject.call_args_list}
+        assert injected_names == {"proj-a", "proj-b"}
+
+    def test_does_not_inject_when_sync_fails(self, tmp_config):
+        """inject_project_config must not be called if sync_remote_colette returns None."""
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.config.commands import cmd_config_sync_remote
+        save_config(self._REMOTE_CFG)
+        save_projects([make_project("proj-a", machine="myremote")])
+        args = MagicMock(machine_name=None)
+        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=None), \
+             patch("colette_cli.utils.ssh.inject_project_config") as mock_inject:
+            cmd_config_sync_remote(args)
+        mock_inject.assert_not_called()

@@ -2,6 +2,8 @@
 
 import argparse
 
+from colette_cli import __version__
+
 BANNER = r"""
    ██████╗ ██████╗ ██╗     ███████╗████████╗████████╗███████╗
   ██╔════╝██╔═══██╗██║     ██╔════╝╚══██╔══╝╚══██╔══╝██╔════╝
@@ -28,6 +30,7 @@ def build_parser():
         ),
     )
     sub = parser.add_subparsers(dest="command", metavar="<subcommand>")
+    parser.add_argument("--version", action="version", version=f"colette {__version__}")
 
     cp = sub.add_parser(
         "config",
@@ -70,8 +73,15 @@ def build_parser():
     ehp.add_argument("template_name", help="Template name")
     ehp.add_argument(
         "hook_name",
-        choices=["oncreate", "onstart", "onstop", "onlogs", "onupdate", "coletterc"],
+        choices=["oncreate", "onstart", "onstop", "onlogs", "onupdate", "ondelete", "coletterc"],
         help="Hook to edit",
+    )
+    ehp.add_argument(
+        "-m", "--machine",
+        dest="machine",
+        default=None,
+        metavar="MACHINE",
+        help="Edit the machine-specific hook instead of the shared hook",
     )
     ephp = csub.add_parser(
         "edit-project-hook", help="Edit a project-specific hook script with nano"
@@ -79,7 +89,7 @@ def build_parser():
     ephp.add_argument("project_name", help="Project name")
     ephp.add_argument(
         "hook_name",
-        choices=["oncreate", "onstart", "onstop", "onlogs", "onupdate", "coletterc"],
+        choices=["oncreate", "onstart", "onstop", "onlogs", "onupdate", "ondelete", "coletterc"],
         help="Hook to edit",
     )
     rtup = csub.add_parser(
@@ -107,6 +117,28 @@ def build_parser():
     rmp.add_argument("machine_name", help="Machine name")
     sdp = csub.add_parser("set-default", help="Set the default machine")
     sdp.add_argument("machine_name", help="Machine name")
+    srp = csub.add_parser(
+        "sync-remote",
+        help="Sync the local colette binary to a remote machine",
+        description=(
+            "Copies the local colette binary to the path configured in 'colette_path'\n"
+            "on one or all remote machines. Skips machines without 'colette_path' set.\n\n"
+            "Set 'colette_path' when adding or editing a machine:\n"
+            "  colette config edit-machine <name>"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    srp.add_argument(
+        "machine_name",
+        nargs="?",
+        default=None,
+        help="Machine to sync (default: all remote machines)",
+    )
+
+    rntp = csub.add_parser("rename-template", help="Rename a template on a machine")
+    rntp.add_argument("machine_name", help="Machine name")
+    rntp.add_argument("old_name", help="Current template name")
+    rntp.add_argument("new_name", help="New template name")
 
     crp = sub.add_parser("create", help="Create a new project from a template")
     crp.add_argument("name", help="Project name (lowercase letters, numbers, hyphens)")

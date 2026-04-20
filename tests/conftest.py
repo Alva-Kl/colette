@@ -32,6 +32,9 @@ def tmp_config(tmp_path, monkeypatch):
 
     import colette_cli.utils.config as cfg_mod
 
+    machines_dir = config_dir / "machines"
+    machines_dir.mkdir()
+
     monkeypatch.setattr(cfg_mod, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(cfg_mod, "CONFIG_FILE", config_dir / "config.json")
     monkeypatch.setattr(cfg_mod, "PROJECTS_FILE", config_dir / "projects.json")
@@ -39,6 +42,7 @@ def tmp_config(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg_mod, "TEMPLATE_SCRIPTS_DIR", templates_dir)
     monkeypatch.setattr(cfg_mod, "PROJECT_HOOKS_DIR", projects_dir)
     monkeypatch.setattr(cfg_mod, "HOOK_FAILURES_FILE", config_dir / "hook-failures.json")
+    monkeypatch.setattr(cfg_mod, "MACHINE_SCRIPTS_DIR", machines_dir)
 
     return config_dir
 

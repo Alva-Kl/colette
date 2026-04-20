@@ -95,6 +95,8 @@ Without an action, prints a summary of the current configuration.
 | `remove-template <machine> <template>` | Remove a template from a machine |
 | `remove-machine <machine>` | Remove a machine |
 | `set-default <machine>` | Set the default machine |
+| `rename-template <machine> <old> <new>` | Rename a template on a machine |
+| `sync-remote [machine]` | Manually sync the colette binary to remote machine(s) |
 
 #### `colette config list`
 
@@ -119,7 +121,7 @@ Interactively add a machine (local or SSH).
 
 ```bash
 colette config add-machine
-# Prompts: name, type (local/ssh), SSH host/key (if ssh), projects_dir, initial template
+# Prompts: name, type (local/ssh), SSH host/port/key (if ssh), projects_dir, initial template
 ```
 
 #### `colette config edit-machine <machine>`
@@ -160,7 +162,15 @@ colette config edit-hook my-template onupdate
 colette config edit-hook my-template coletterc
 ```
 
-Valid hook names: `oncreate`, `onstart`, `onstop`, `onlogs`, `onupdate`, `coletterc`.
+Use `--machine` / `-m` to edit a **machine-specific** hook override instead of
+the shared hook. Machine-specific hooks take precedence over the shared hook
+during execution; they fall back to the shared hook when their content is empty.
+
+```bash
+colette config edit-hook my-template onstart --machine my-remote
+```
+
+Valid hook names: `oncreate`, `onstart`, `onstop`, `onlogs`, `onupdate`, `ondelete`, `coletterc`.
 
 #### `colette config edit-project-hook <project> <hook>`
 
@@ -173,7 +183,7 @@ colette config edit-project-hook my-project onstart
 colette config edit-project-hook my-project onlogs
 ```
 
-Valid hook names: `oncreate`, `onstart`, `onstop`, `onlogs`, `onupdate`, `coletterc`.
+Valid hook names: `oncreate`, `onstart`, `onstop`, `onlogs`, `onupdate`, `ondelete`, `coletterc`.
 
 Project-level hooks take full precedence over the template hook for that event.
 
@@ -189,6 +199,28 @@ source repository). The hook receives `COLETTE_TEMPLATE_NAME`,
 colette config run-template-update my-template
 colette config run-template-update my-template -m my-server
 ```
+
+#### `colette config rename-template <machine> <old> <new>`
+
+Rename a template on a machine. Updates hook file directories and updates all projects
+that referenced the old template name.
+
+```bash
+colette config rename-template local old-name new-name
+```
+
+#### `colette config sync-remote [machine]`
+
+Manually sync the local colette binary (and config snapshot) to one or all remote
+machines. Requires `colette_path` to be set on the machine (set it via
+`colette config edit-machine`).
+
+```bash
+colette config sync-remote            # all remote machines
+colette config sync-remote my-server  # one machine
+```
+
+This sync also happens automatically on every command that SSHs to a remote machine.
 
 #### `colette config remove-template <machine> <template>`
 
@@ -287,6 +319,31 @@ colette list
 ```
 
 List all registered projects grouped by machine.
+
+---
+
+### Current-directory detection
+
+Most commands that accept an optional project `<name>` will automatically detect the
+project from the current working directory when the name is omitted:
+
+```bash
+cd ~/projects/my-project
+colette attach      # same as: colette attach my-project
+colette start       # same as: colette start my-project
+colette stop        # same as: colette stop my-project
+colette code        # same as: colette code my-project
+colette copilot     # same as: colette copilot my-project
+colette delete      # same as: colette delete my-project
+colette unlink      # same as: colette unlink my-project
+colette monitor     # same as: colette monitor my-project
+colette update      # same as: colette update my-project
+colette logs        # same as: colette logs my-project
+```
+
+If the current directory is not a registered project path, batch commands (`start`,
+`stop`, `monitor`, `update`) fall back to acting on all projects; single-name commands
+(`attach`, `code`, `copilot`, `delete`, `unlink`) print their usage instead.
 
 ---
 
@@ -530,6 +587,7 @@ They are automatically invoked by Colette at lifecycle events.
 | `onstop` | `.onstop` | Before `colette stop` | Non-interactive |
 | `onlogs` | `.onlogs` | `colette logs` | Interactive (tmux) |
 | `onupdate` | `.onupdate` | `colette update` / `colette config run-template-update` | Non-interactive |
+| `ondelete` | `.ondelete` | Before `colette delete` (files are removed after the hook) | Non-interactive |
 | `coletterc` | `.coletterc` | Before every hook and on session bootstrap | Sourced (not executed) |
 
 `coletterc` is the base common hook. It is sourced automatically before every
@@ -628,6 +686,7 @@ colette config add-machine
 # Name:         my-server
 # Type:         ssh
 # SSH host:     user@192.168.1.10   (or an SSH config alias)
+# SSH port:     24                  (optional, leave empty for default 22)
 # SSH key:      ~/.ssh/id_ed25519   (optional)
 # projects_dir: /home/user/projects
 ```

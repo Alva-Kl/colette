@@ -53,10 +53,14 @@ def _ensure_session_remote(project, machine, startup_command=None):
         machine, f"tmux has-session -t {name} 2>/dev/null && echo yes || echo no"
     )
     if r.stdout.strip() != "yes":
-        ssh_run(
+        result = ssh_run(
             machine,
             f"tmux new-session -d -s {shlex.quote(name)} -c {shlex.quote(path)} bash -lc {shlex.quote(startup_command)}",
         )
+        if result.returncode != 0:
+            from .formatting import warn
+            details = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+            warn(f"failed to create remote tmux session for '{name}': {details}")
         return True
     return False
 

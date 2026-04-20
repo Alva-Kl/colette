@@ -199,14 +199,50 @@ class TestCmdDelete:
         assert not project_dir.exists()
         assert load_projects() == []
 
+    def test_ondelete_hook_runs_before_delete(self, tmp_config, tmp_path):
+        """The ondelete hook executes before project files are removed."""
+        from colette_cli.utils.config import (
+            save_config, save_projects, load_projects,
+            write_machine_template_hook, save_templates,
+        )
+        from colette_cli.project.commands import cmd_delete
+
+        marker = tmp_path / "marker.txt"
+        write_machine_template_hook("local", "tmpl", "ondelete", f"#!/usr/bin/env bash\necho ondelete > {marker}")
+
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        cfg = {
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": str(tmp_path / "projects"),
+                    "templates": [{"name": "tmpl", "type": "directory", "path": str(project_dir)}],
+                }
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        save_templates({"templates": [{"name": "tmpl", "params": {}}]})
+        save_projects([make_project("proj", path=str(project_dir), template="tmpl")])
+
+        args = MagicMock()
+        args.name = "proj"
+        cmd_delete(args, skip_confirmation=True)
+
+        assert marker.exists(), "ondelete hook did not run"
+        assert marker.read_text().strip() == "ondelete"
+        assert not project_dir.exists()
+        assert load_projects() == []
+
 
 class TestCmdCreate:
     def test_oncreate_hook_runs_on_create(self, tmp_config, tmp_path):
         """The oncreate hook actually executes when cmd_create is called."""
-        from colette_cli.utils.config import save_config, load_projects, write_template_hook, save_templates
+        from colette_cli.utils.config import save_config, load_projects, write_machine_template_hook, save_templates
         from colette_cli.project.commands import cmd_create
         marker = tmp_path / "marker.txt"
-        write_template_hook("tmpl", "oncreate", f"#!/usr/bin/env bash\necho oncreate > {marker}")
+        write_machine_template_hook("local", "tmpl", "oncreate", f"#!/usr/bin/env bash\necho oncreate > {marker}")
         template_dir = tmp_path / "tmpl-source"
         template_dir.mkdir()
         cfg = {
@@ -416,3 +452,50 @@ class TestCwdAutoDetect:
         finally:
             os.chdir(orig)
         assert exc.value.code == 0
+
+    def test_copilot_remote_uses_login_shell(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.project.commands import cmd_copilot
+
+        cfg = {
+            "machines": {
+                "remote": {"type": "ssh", "host": "server", "projects_dir": "/home/user"}
+            },
+            "default_machine": "remote",
+        }
+        save_config(cfg)
+        save_projects([make_project("my-project", machine="remote", path="/home/user/my-project")])
+
+        args = MagicMock()
+        args.name = "my-project"
+
+        with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
+             patch("colette_cli.project.commands.ssh_interactive") as mock_ssh:
+            cmd_copilot(args)
+
+        tmux_cmd = mock_ssh.call_args[0][1]
+        assert "bash -lc copilot" in tmux_cmd
+
+    def test_copilot_remote_with_port_uses_port_in_ssh(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.project.commands import cmd_copilot
+
+        cfg = {
+            "machines": {
+                "remote": {"type": "ssh", "host": "server", "port": 24, "projects_dir": "/home/user"}
+            },
+            "default_machine": "remote",
+        }
+        save_config(cfg)
+        save_projects([make_project("my-project", machine="remote", path="/home/user/my-project")])
+
+        args = MagicMock()
+        args.name = "my-project"
+
+        with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
+             patch("colette_cli.utils.ssh.subprocess.run") as mock_run:
+            cmd_copilot(args)
+
+        ssh_cmd = mock_run.call_args[0][0]
+        assert "-p" in ssh_cmd
+        assert "24" in ssh_cmd

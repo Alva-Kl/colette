@@ -7,7 +7,26 @@ PROD_BUILD="$ROOT_DIR/build/prod/colette"
 MODE="${1:-beta}"
 PYTHON_BIN="${PYTHON:-python3}"
 
+_bump_patch_version() {
+  local init_file="$ROOT_DIR/colette_cli/__init__.py"
+  local toml_file="$ROOT_DIR/pyproject.toml"
+
+  local current_version
+  current_version=$(grep -oP '(?<=__version__ = ")[^"]+' "$init_file")
+
+  IFS='.' read -r major minor patch <<< "$current_version"
+  patch=$((patch + 1))
+  local new_version="$major.$minor.$patch"
+
+  sed -i "s/__version__ = \"$current_version\"/__version__ = \"$new_version\"/" "$init_file"
+  sed -i "s/^version = \"[^\"]*\"/version = \"$new_version\"/" "$toml_file"
+
+  echo "Version bumped: $current_version → $new_version"
+}
+
 build_beta() {
+  _bump_patch_version
+
   local tmp_dir
   tmp_dir="$(mktemp -d)"
   trap "rm -rf '$tmp_dir'" EXIT

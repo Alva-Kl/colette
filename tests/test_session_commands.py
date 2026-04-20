@@ -33,10 +33,10 @@ class TestCmdStart:
 
     def test_onstart_hook_runs_on_start(self, tmp_config, tmp_path):
         """The onstart hook actually executes when cmd_start is called."""
-        from colette_cli.utils.config import save_config, save_projects, write_template_hook
+        from colette_cli.utils.config import save_config, save_projects, write_machine_template_hook
         from colette_cli.session.commands import cmd_start
         marker = tmp_path / "marker.txt"
-        write_template_hook("tmpl", "onstart", f"#!/usr/bin/env bash\necho onstart > {marker}")
+        write_machine_template_hook("local", "tmpl", "onstart", f"#!/usr/bin/env bash\necho onstart > {marker}")
         save_config({
             "machines": {"local": make_local_machine(str(tmp_path))},
             "default_machine": "local",
@@ -98,10 +98,10 @@ class TestCmdStop:
 
     def test_onstop_hook_runs_on_stop(self, tmp_config, tmp_path):
         """The onstop hook actually executes when cmd_stop is called."""
-        from colette_cli.utils.config import save_config, save_projects, write_template_hook
+        from colette_cli.utils.config import save_config, save_projects, write_machine_template_hook
         from colette_cli.session.commands import cmd_stop
         marker = tmp_path / "marker.txt"
-        write_template_hook("tmpl", "onstop", f"#!/usr/bin/env bash\necho onstop > {marker}")
+        write_machine_template_hook("local", "tmpl", "onstop", f"#!/usr/bin/env bash\necho onstop > {marker}")
         save_config({
             "machines": {"local": make_local_machine(str(tmp_path))},
             "default_machine": "local",
@@ -361,10 +361,10 @@ class TestCmdUpdate:
 
     def test_onupdate_hook_actually_runs(self, tmp_config, tmp_path):
         """The onupdate hook executes when cmd_update is called."""
-        from colette_cli.utils.config import save_config, save_projects, write_template_hook
+        from colette_cli.utils.config import save_config, save_projects, write_machine_template_hook
         from colette_cli.session.commands import cmd_update
         marker = tmp_path / "marker.txt"
-        write_template_hook("tmpl", "onupdate", f"#!/usr/bin/env bash\necho onupdate > {marker}")
+        write_machine_template_hook("local", "tmpl", "onupdate", f"#!/usr/bin/env bash\necho onupdate > {marker}")
         save_config({
             "machines": {"local": make_local_machine(str(tmp_path))},
             "default_machine": "local",

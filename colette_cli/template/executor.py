@@ -9,9 +9,14 @@ from pathlib import Path
 
 from colette_cli.utils.config import (
     append_hook_failure,
+    get_machine_template_hook_path,
+    get_machine_template_params,
     get_template_hook_path,
+    machine_template_hook_exists,
+    read_machine_template_hook,
     read_project_hook,
     read_template_hook,
+    template_hook_exists,
 )
 from colette_cli.utils.formatting import err, warn
 from colette_cli.utils.ssh import ssh_run
@@ -43,41 +48,57 @@ def _super_assignment(super_path, is_remote: bool = False) -> str:
     return f"SUPER=$(mktemp) && printf '%s' {shlex.quote(b64)} | base64 -d > \"$SUPER\""
 
 
-def _has_effective_script(content):
-    if not content:
-        return False
-    lines = []
-    for line in content.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        lines.append(stripped)
-    return bool(lines)
-
-
-def _resolve_hook_with_super(project_name, template_name, hook_name):
+def _resolve_hook_with_super(project_name, template_name, hook_name, machine_name=None):
     """Resolve a hook for a project, returning (content, super_path).
 
-    Checks the project-specific hook first, then falls back to the template hook.
-    When a project-level override is active, super_path is set to the template
-    hook file path so the project hook can call `source $SUPER` to inherit the
-    template hook. Returns (None, None) if no effective hook is found.
+    Resolution order:
+      1. Project-specific hook
+      2. Machine-template hook (machine_name + template override)
+      3. Shared template hook
+
+    Each level can call `source $SUPER` to delegate to the next.
+    Returns (None, None) if no effective hook is found.
     """
+    machine_template_path = (
+        get_machine_template_hook_path(machine_name, template_name, hook_name)
+        if machine_name and template_name
+        else None
+    )
+    shared_template_path = (
+        get_template_hook_path(template_name, hook_name) if template_name else None
+    )
+
     project_hook = read_project_hook(project_name, hook_name)
     if _has_effective_script(project_hook):
-        super_path = (
-            get_template_hook_path(template_name, hook_name) if template_name else None
-        )
-        return project_hook, super_path
+        # super for project hook: machine-template hook if effective, else shared template hook
+        if machine_name and template_name and machine_template_hook_exists(machine_name, template_name, hook_name):
+            machine_hook_content = read_machine_template_hook(machine_name, template_name, hook_name)
+            if _has_effective_script(machine_hook_content):
+                return project_hook, machine_template_path
+        # Only use the template hook as super if the file actually exists on disk
+        if template_name and template_hook_exists(template_name, hook_name):
+            return project_hook, shared_template_path
+        return project_hook, None
+
+    if machine_name and template_name:
+        machine_hook = read_machine_template_hook(machine_name, template_name, hook_name)
+        if _has_effective_script(machine_hook):
+            # Only use the template hook as super if the file actually exists on disk
+            if template_name and template_hook_exists(template_name, hook_name):
+                return machine_hook, shared_template_path
+            return machine_hook, None
+
     if template_name:
         template_hook = read_template_hook(template_name, hook_name)
         if _has_effective_script(template_hook):
             return template_hook, None
+
     return None, None
 
 
 def _hook_environment(
-    project, machine_name, template_name, machine, template_metadata=None, super_path=None
+    project, machine_name, template_name, machine, template_metadata=None, super_path=None,
+    machine_params=None,
 ):
     env = dict(os.environ)
     env.update(
@@ -88,7 +109,10 @@ def _hook_environment(
             "COLETTE_TEMPLATE_NAME": template_name or "",
         }
     )
-    for key, value in ((template_metadata or {}).get("params") or {}).items():
+    # Shared template params, then machine-specific params override them.
+    merged_params = dict((template_metadata or {}).get("params") or {})
+    merged_params.update(machine_params or {})
+    for key, value in merged_params.items():
         env[f"COLETTE_PARAM_{key.upper()}"] = str(value)
     if super_path:
         env["SUPER"] = str(super_path)
@@ -130,7 +154,7 @@ def build_project_bootstrap(project, machine_name, template_metadata, is_remote:
     """
     template_name = (template_metadata or {}).get("name")
     coletterc, super_path = _resolve_hook_with_super(
-        project["name"], template_name, "coletterc"
+        project["name"], template_name, "coletterc", machine_name=machine_name
     )
     if not _has_effective_script(coletterc):
         return "exec bash"
@@ -161,16 +185,18 @@ def run_template_hook(
     template_name = (template_metadata or {}).get("name")
 
     command, super_path = _resolve_hook_with_super(
-        project["name"], template_name, hook_name
+        project["name"], template_name, hook_name, machine_name=machine_name
     )
     if command is None:
         return True
 
     command = _prepend_coletterc(project["name"], template_name, command, hook_super_path=super_path, is_remote=is_remote)
 
+    machine_params = get_machine_template_params(machine, template_name) if template_name else {}
     env = _hook_environment(
         project, machine_name, template_name, machine, template_metadata,
         super_path=None if is_remote else super_path,
+        machine_params=machine_params,
     )
 
     if is_remote:
@@ -226,15 +252,17 @@ def build_hook_command(project, machine_name, template_metadata, machine, hook_n
     """
     template_name = (template_metadata or {}).get("name")
     command, super_path = _resolve_hook_with_super(
-        project["name"], template_name, hook_name
+        project["name"], template_name, hook_name, machine_name=machine_name
     )
     if command is None:
         return None
 
     command = _prepend_coletterc(project["name"], template_name, command, hook_super_path=super_path)
 
+    machine_params = get_machine_template_params(machine, template_name) if template_name else {}
     env = _hook_environment(
-        project, machine_name, template_name, machine, template_metadata, super_path
+        project, machine_name, template_name, machine, template_metadata, super_path,
+        machine_params=machine_params,
     )
     assignments = " ".join(
         f"{key}={shlex.quote(str(value))}"
@@ -264,12 +292,21 @@ def run_onupdate_for_template(
     The working directory is *template_path* when provided, or the template
     hooks directory otherwise.
     """
-    command = read_template_hook(template_name, "onupdate")
+    from colette_cli.utils.config import (
+        get_machine_template_dir,
+        read_machine_template_hook,
+    )
+    # Prefer machine-specific hook; fall back to shared legacy hook.
+    command = read_machine_template_hook(machine_name, template_name, "onupdate") if machine_name else None
+    if command is None:
+        command = read_template_hook(template_name, "onupdate")
     if not _has_effective_script(command):
         return True
 
     # Prepend the template's coletterc (no project override possible here)
-    coletterc = read_template_hook(template_name, "coletterc")
+    coletterc = read_machine_template_hook(machine_name, template_name, "coletterc") if machine_name else None
+    if coletterc is None:
+        coletterc = read_template_hook(template_name, "coletterc")
     if _has_effective_script(coletterc):
         command = coletterc.strip() + "\n" + command
 
@@ -280,12 +317,15 @@ def run_onupdate_for_template(
             "COLETTE_MACHINE_NAME": machine_name or "",
         }
     )
-    for key, value in ((template_metadata or {}).get("params") or {}).items():
+    # Merge shared template params with machine-specific overrides.
+    merged_params = dict((template_metadata or {}).get("params") or {})
+    merged_params.update(get_machine_template_params(machine, template_name))
+    for key, value in merged_params.items():
         env[f"COLETTE_PARAM_{key.upper()}"] = str(value)
     if template_path:
         env["COLETTE_TEMPLATE_PATH"] = str(template_path)
 
-    hooks_dir = str(get_template_hook_path(template_name, "onupdate").parent)
+    hooks_dir = str(get_machine_template_dir(machine_name, template_name)) if machine_name else str(get_template_hook_path(template_name, "onupdate").parent)
     cwd = template_path or hooks_dir
 
     if is_remote:

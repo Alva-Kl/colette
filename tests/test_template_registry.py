@@ -117,3 +117,21 @@ class TestListTemplateHookPaths:
         paths = list_template_hook_paths("tmpl")
         assert "onstart" in paths
         assert "oncreate" in paths
+
+
+class TestScaffoldMachineTemplateHookFiles:
+    def test_creates_all_hook_files(self, tmp_config):
+        from colette_cli.template.registry import scaffold_machine_template_hook_files
+        from colette_cli.utils.config import machine_template_hook_exists
+
+        scaffold_machine_template_hook_files("myhost", "dev")
+        for hook in ("oncreate", "onstart", "onstop", "onlogs", "coletterc"):
+            assert machine_template_hook_exists("myhost", "dev", hook)
+
+    def test_does_not_overwrite_existing(self, tmp_config):
+        from colette_cli.template.registry import scaffold_machine_template_hook_files
+        from colette_cli.utils.config import write_machine_template_hook, read_machine_template_hook
+
+        write_machine_template_hook("myhost", "dev", "onstart", "custom content")
+        scaffold_machine_template_hook_files("myhost", "dev")
+        assert read_machine_template_hook("myhost", "dev", "onstart") == "custom content"
