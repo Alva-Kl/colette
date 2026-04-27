@@ -1550,3 +1550,51 @@ class TestTemplateParamItemsMachineSpecific:
         cfg = load_config()
         tmpl = next(t for t in cfg["machines"]["remote"]["templates"] if t["name"] == "dev")
         assert tmpl["params"]["HOST"] == "myhost"
+
+
+class TestAddTemplateProjectNameConflict:
+    CFG_WITH_PROJECT = {
+        "machines": {"local": {"type": "local", "projects_dir": "/tmp/projects", "templates": []}},
+        "default_machine": "local",
+    }
+
+    def test_add_template_aborts_if_name_is_existing_project(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects, load_config
+        from colette_cli.tui.screens import machine_template_items
+        save_config(self.CFG_WITH_PROJECT)
+        save_projects([{"name": "existing-project", "machine": "local", "path": "/tmp/existing-project"}])
+        items = machine_template_items("local")
+        with patch("colette_cli.tui.forms.ask", return_value="existing-project"), \
+             patch("colette_cli.template.registry.scaffold_template_hook_files"):
+            next(i for i in items if i.label == "Add template").run()
+        cfg = load_config()
+        assert not cfg["machines"]["local"].get("templates")
+
+
+class TestCreateProjectTemplateNameConflict:
+    def test_create_project_aborts_if_name_is_existing_template(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.project.commands import cmd_create
+        cfg = {
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": "/tmp/projects",
+                    "templates": [{"name": "my-tmpl", "type": "directory", "path": "/tmp/my-tmpl"}],
+                }
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        save_projects([])
+        with patch("colette_cli.project.cmd_create") as mock_create, \
+             patch("colette_cli.tui.forms.ask", side_effect=["my-tmpl", "local", "my-tmpl"]):
+            from colette_cli.tui.screens import project_list_items
+            items = project_list_items()
+            next(i for i in items if i.label == "Create project").run()
+        # cmd_create itself will error — mock means it won't, but the TUI
+        # aborts before calling it because the name matches a template
+        # The create is still dispatched via _async_popup, but we verify
+        # that the name guard in _create_project_interactive returns early.
+        # Since the guard runs before cmd_create is invoked, mock should NOT be called.
+        mock_create.assert_not_called()

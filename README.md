@@ -57,6 +57,11 @@ A **template** is a directory or git repository used as the starting point when
 creating a new project. Templates have associated hook scripts that run at
 lifecycle events.
 
+Template names and project names share a **global namespace** — a name cannot be
+used for both a template and a project at the same time. This allows project
+commands (`colette code`, `colette attach`, etc.) to accept a template name and
+work on the template's source directory directly.
+
 ### Projects
 
 A **project** is a directory on a machine, optionally created from a template.
@@ -510,9 +515,11 @@ colette code <name>
 ```
 
 Open the project in VS Code. Uses the Remote SSH extension for remote machines.
+Also works with a **template name** — opens the template's source directory.
 
 ```bash
 colette code my-project
+colette code my-template   # opens the template's source directory
 ```
 
 ---

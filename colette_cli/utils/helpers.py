@@ -45,6 +45,48 @@ def iter_machine_projects(projects, cfg, filter_machine=None, filter_names=None)
         yield machine_name, machine_projects, machine, is_remote_machine(machine)
 
 
+def all_template_names(cfg=None):
+    """Return a set of all template names across all machines."""
+    from colette_cli.utils.config import load_config
+    if cfg is None:
+        cfg = load_config()
+    names = set()
+    for machine in cfg.get("machines", {}).values():
+        for tmpl in machine.get("templates", []):
+            if tmpl.get("name"):
+                names.add(tmpl["name"])
+    return names
+
+
+def find_template_as_project(name, cfg=None):
+    """Return a project-like dict for a directory-type template, or None.
+
+    Searches all machines for a template named *name*. If found and the
+    template is of type 'directory' with a configured path, returns:
+        {"name": name, "machine": machine_name, "path": path, "template": name}
+    Returns None for git-type templates (no local path) or if not found.
+    """
+    from colette_cli.utils.config import load_config
+    if cfg is None:
+        cfg = load_config()
+    for machine_name, machine in cfg.get("machines", {}).items():
+        for tmpl in machine.get("templates", []):
+            if tmpl.get("name") != name:
+                continue
+            if tmpl.get("type", "directory") != "directory":
+                return None
+            path = tmpl.get("path", "").strip()
+            if not path:
+                return None
+            return {
+                "name": name,
+                "machine": machine_name,
+                "path": path,
+                "template": name,
+            }
+    return None
+
+
 def detect_project_from_cwd():
     """Return the project name whose path matches the current working directory, or None."""
     from colette_cli.utils.config import load_projects

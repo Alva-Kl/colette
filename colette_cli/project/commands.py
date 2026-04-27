@@ -22,15 +22,25 @@ from colette_cli.utils.config import (
     save_projects,
 )
 from colette_cli.utils.formatting import bold, cyan, dim, err, info, red
-from colette_cli.utils.helpers import build_projects_by_machine, is_remote_machine
+from colette_cli.utils.helpers import (
+    all_template_names,
+    build_projects_by_machine,
+    find_template_as_project,
+    is_remote_machine,
+)
 from colette_cli.utils.ssh import ssh_interactive, ssh_run
 from colette_cli.utils.tmux import get_sessions, local_tmux_session
 from colette_cli.utils.validation import validate_project_name
 
 
+def _is_template_proxy(project):
+    """Return True if the project dict came from find_template_as_project (not a real registered project)."""
+    return project.get("template") == project.get("name")
+
+
 def require_project(name):
-    """Get a project or error if not found."""
-    project = get_project(name)
+    """Get a project (or a directory-type template acting as one) or error if not found."""
+    project = get_project(name) or find_template_as_project(name)
     if not project:
         err(
             f"project '{name}' not found. Run 'colette list' to see available projects."
@@ -53,6 +63,9 @@ def cmd_create(args):
 
     if any(project["name"] == name for project in projects):
         err(f"project '{name}' already exists.")
+
+    if name in all_template_names(cfg):
+        err(f"'{name}' is already used as a template name.")
 
     machine_name = args.machine or cfg.get("default_machine")
     if not machine_name:
@@ -171,6 +184,9 @@ def cmd_delete(args, skip_confirmation: bool = False):
     name = args.name
     project = require_project(name)
 
+    if _is_template_proxy(project):
+        err(f"'{name}' is a template, not a project. Use 'colette config remove-template' to remove it.")
+
     if not skip_confirmation:
         answer = input(
             f"Delete project '{name}' at '{project['path']}' on '{project['machine']}'?\n"
@@ -285,6 +301,9 @@ def cmd_unlink(args):
     name = args.name
     project = require_project(name)
 
+    if _is_template_proxy(project):
+        err(f"'{name}' is a template, not a project. Use 'colette config remove-template' to remove it.")
+
     answer = input(
         f"Unlink project '{name}' (path '{project['path']}' on '{project['machine']}' will NOT be deleted)? [y/N]: "
     ).strip().lower()
@@ -358,6 +377,9 @@ def cmd_link(args):
     projects = load_projects()
     if any(p["name"] == name for p in projects):
         err(f"project '{name}' already exists.")
+
+    if name in all_template_names():
+        err(f"'{name}' is already used as a template name.")
 
     if is_remote:
         result = ssh_run(machine, f"test -d {shlex.quote(path)} && echo ok")

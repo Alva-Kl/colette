@@ -31,7 +31,7 @@ from colette_cli.template import (
     normalize_machine_templates,
     scaffold_template_hook_files,
 )
-from colette_cli.utils.helpers import is_remote_machine
+from colette_cli.utils.helpers import all_template_names, is_remote_machine
 from colette_cli.utils.tmux import local_tmux_session
 from colette_cli.template import build_project_bootstrap
 
@@ -378,6 +378,8 @@ def _add_template_interactive(machine_name):
         return
     if name in list_machine_template_names(machine):
         return
+    if any(p["name"] == name for p in load_projects()):
+        return
 
     ttype = ask("Template type (directory/git)", default="directory") or "directory"
     if ttype not in ("directory", "git"):
@@ -519,6 +521,9 @@ def _create_project_interactive():
 
     name = ask("Project name")
     if not name:
+        return
+
+    if name in all_template_names(cfg):
         return
 
     machine = ask("Machine", default=default_machine, choices=machines or None) or default_machine

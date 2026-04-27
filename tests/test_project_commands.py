@@ -499,3 +499,146 @@ class TestCwdAutoDetect:
         ssh_cmd = mock_run.call_args[0][0]
         assert "-p" in ssh_cmd
         assert "24" in ssh_cmd
+
+
+class TestRequireProjectTemplateFallback:
+    def test_returns_template_as_project_when_no_project_found(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.project.commands import require_project
+        cfg = {
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": "/tmp/projects",
+                    "templates": [{"name": "my-tmpl", "type": "directory", "path": "/tmp/my-tmpl"}],
+                }
+            }
+        }
+        save_config(cfg)
+        save_projects([])
+        result = require_project("my-tmpl")
+        assert result["name"] == "my-tmpl"
+        assert result["path"] == "/tmp/my-tmpl"
+        assert result["machine"] == "local"
+        assert result["template"] == "my-tmpl"
+
+    def test_git_template_not_found_as_project(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.project.commands import require_project
+        cfg = {
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": "/tmp/projects",
+                    "templates": [{"name": "git-tmpl", "type": "git", "url": "https://example.com/repo"}],
+                }
+            }
+        }
+        save_config(cfg)
+        save_projects([])
+        with pytest.raises(SystemExit):
+            require_project("git-tmpl")
+
+
+class TestCmdCreateTemplateNameConflict:
+    def test_errors_when_name_matches_existing_template(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.project.commands import cmd_create
+        template_dir = tmp_path / "my-tmpl"
+        template_dir.mkdir()
+        cfg = {
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": str(tmp_path / "projects"),
+                    "templates": [{"name": "my-tmpl", "type": "directory", "path": str(template_dir)}],
+                }
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        save_projects([])
+        args = MagicMock()
+        args.name = "my-tmpl"
+        args.machine = "local"
+        args.template = "my-tmpl"
+        with pytest.raises(SystemExit):
+            cmd_create(args)
+
+
+class TestCmdLinkTemplateNameConflict:
+    def test_errors_when_name_matches_existing_template(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.project.commands import cmd_link
+        template_dir = tmp_path / "my-tmpl"
+        template_dir.mkdir()
+        link_dir = tmp_path / "link-target"
+        link_dir.mkdir()
+        cfg = {
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": str(tmp_path / "projects"),
+                    "templates": [{"name": "my-tmpl", "type": "directory", "path": str(template_dir)}],
+                }
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        save_projects([])
+        args = MagicMock()
+        args.path = str(link_dir)
+        args.name = "my-tmpl"
+        args.machine = "local"
+        with pytest.raises(SystemExit):
+            cmd_link(args)
+
+
+class TestCmdDeleteTemplateGuard:
+    def test_errors_when_given_template_name(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.project.commands import cmd_delete
+        template_dir = tmp_path / "my-tmpl"
+        template_dir.mkdir()
+        cfg = {
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": str(tmp_path / "projects"),
+                    "templates": [{"name": "my-tmpl", "type": "directory", "path": str(template_dir)}],
+                }
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        save_projects([])
+        args = MagicMock()
+        args.name = "my-tmpl"
+        with pytest.raises(SystemExit):
+            cmd_delete(args)
+        # Source directory must NOT have been touched
+        assert template_dir.exists()
+
+
+class TestCmdUnlinkTemplateGuard:
+    def test_errors_when_given_template_name(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.project.commands import cmd_unlink
+        template_dir = tmp_path / "my-tmpl"
+        template_dir.mkdir()
+        cfg = {
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": str(tmp_path / "projects"),
+                    "templates": [{"name": "my-tmpl", "type": "directory", "path": str(template_dir)}],
+                }
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        save_projects([])
+        args = MagicMock()
+        args.name = "my-tmpl"
+        with pytest.raises(SystemExit):
+            cmd_unlink(args)

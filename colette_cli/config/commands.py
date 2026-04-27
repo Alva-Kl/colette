@@ -22,6 +22,7 @@ from colette_cli.utils.config import (
     scaffold_project_hook_files,
 )
 from colette_cli.utils.formatting import bold, cyan, err, info
+from colette_cli.utils.helpers import all_template_names
 
 
 def _parse_params(raw_params):
@@ -277,6 +278,10 @@ def cmd_config_add_template(args):
             f"template '{args.template_name}' already exists on machine '{args.machine_name}'."
         )
 
+    projects = load_projects()
+    if any(p["name"] == args.template_name for p in projects):
+        err(f"'{args.template_name}' is already used as a project name.")
+
     template_type = _prompt_template_type()
     source = _prompt_template_source(template_type)
     if template_type == "directory" and not source.strip():
@@ -468,13 +473,16 @@ def cmd_config_rename_template(args):
     if any(t["name"] == new_name for t in machine_templates):
         err(f"template '{new_name}' already exists on machine '{args.machine_name}'.")
 
+    projects = load_projects()
+    if any(p["name"] == new_name for p in projects):
+        err(f"'{new_name}' is already used as a project name.")
+
     template["name"] = new_name
     machine["templates"] = machine_templates
     save_config(cfg)
 
     rename_machine_template_dir(args.machine_name, args.old_name, new_name)
 
-    projects = load_projects()
     updated = 0
     for project in projects:
         if project.get("machine") == args.machine_name and project.get("template") == args.old_name:

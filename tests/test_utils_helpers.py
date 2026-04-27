@@ -821,3 +821,65 @@ class TestIterMachineProjects:
         _, _, machine, is_remote = results[0]
         assert machine == {}
         assert is_remote is False
+
+
+class TestAllTemplateNames:
+    def test_returns_names_from_all_machines(self, tmp_config):
+        from tests.conftest import write_config
+        from colette_cli.utils.helpers import all_template_names
+        write_config(tmp_config, {
+            "machines": {
+                "local": {"type": "local", "templates": [{"name": "foo"}, {"name": "bar"}]},
+                "remote": {"type": "ssh", "templates": [{"name": "baz"}]},
+            }
+        })
+        assert all_template_names() == {"foo", "bar", "baz"}
+
+    def test_empty_when_no_machines(self, tmp_config):
+        from tests.conftest import write_config
+        from colette_cli.utils.helpers import all_template_names
+        write_config(tmp_config, {"machines": {}})
+        assert all_template_names() == set()
+
+    def test_accepts_cfg_arg(self):
+        from colette_cli.utils.helpers import all_template_names
+        cfg = {"machines": {"local": {"templates": [{"name": "my-tmpl"}]}}}
+        assert all_template_names(cfg) == {"my-tmpl"}
+
+
+class TestFindTemplateAsProject:
+    def _cfg(self):
+        return {
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "templates": [
+                        {"name": "my-tmpl", "type": "directory", "path": "/tmp/my-tmpl"},
+                        {"name": "git-tmpl", "type": "git", "url": "https://example.com/repo"},
+                        {"name": "no-path-tmpl", "type": "directory", "path": ""},
+                    ],
+                }
+            }
+        }
+
+    def test_returns_project_like_dict_for_directory_template(self):
+        from colette_cli.utils.helpers import find_template_as_project
+        result = find_template_as_project("my-tmpl", self._cfg())
+        assert result == {
+            "name": "my-tmpl",
+            "machine": "local",
+            "path": "/tmp/my-tmpl",
+            "template": "my-tmpl",
+        }
+
+    def test_returns_none_for_git_type(self):
+        from colette_cli.utils.helpers import find_template_as_project
+        assert find_template_as_project("git-tmpl", self._cfg()) is None
+
+    def test_returns_none_for_missing_path(self):
+        from colette_cli.utils.helpers import find_template_as_project
+        assert find_template_as_project("no-path-tmpl", self._cfg()) is None
+
+    def test_returns_none_when_not_found(self):
+        from colette_cli.utils.helpers import find_template_as_project
+        assert find_template_as_project("nonexistent", self._cfg()) is None

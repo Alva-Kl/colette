@@ -397,3 +397,42 @@ class TestCmdConfigSyncRemote:
              patch("colette_cli.utils.ssh.inject_project_config") as mock_inject:
             cmd_config_sync_remote(args)
         mock_inject.assert_not_called()
+
+
+class TestCmdConfigAddTemplateProjectNameConflict:
+    def test_errors_when_template_name_is_existing_project(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.config.commands import cmd_config_add_template
+        save_config({
+            "machines": {"local": {"type": "local", "templates": []}},
+            "default_machine": "local",
+        })
+        save_projects([{"name": "my-project", "machine": "local", "path": "/tmp/my-project"}])
+        args = MagicMock()
+        args.machine_name = "local"
+        args.template_name = "my-project"
+        args.params = []
+        with pytest.raises(SystemExit):
+            cmd_config_add_template(args)
+
+
+class TestCmdConfigRenameTemplateProjectNameConflict:
+    def test_errors_when_new_name_is_existing_project(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.config.commands import cmd_config_rename_template
+        save_config({
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "templates": [{"name": "old-tmpl", "type": "directory", "path": "/tmp/old"}],
+                }
+            },
+            "default_machine": "local",
+        })
+        save_projects([{"name": "existing-project", "machine": "local", "path": "/tmp/existing-project"}])
+        args = MagicMock()
+        args.machine_name = "local"
+        args.old_name = "old-tmpl"
+        args.new_name = "existing-project"
+        with pytest.raises(SystemExit):
+            cmd_config_rename_template(args)

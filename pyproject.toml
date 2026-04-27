@@ -4,7 +4,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "colette"
-version = "0.1.1"
+version = "0.1.2"
 description = "Context Organizer for Local Environments and Task Tracking Engine"
 readme = "README.md"
 license = { text = "MIT" }
