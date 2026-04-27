@@ -25,8 +25,6 @@ _bump_patch_version() {
 }
 
 build_beta() {
-  _bump_patch_version
-
   local tmp_dir
   tmp_dir="$(mktemp -d)"
   trap "rm -rf '$tmp_dir'" EXIT
@@ -53,6 +51,7 @@ promote_beta() {
     exit 1
   fi
 
+  _bump_patch_version
   mkdir -p "$(dirname "$PROD_BUILD")"
   cp "$BETA_BUILD" "$PROD_BUILD"
   chmod +x "$PROD_BUILD"
