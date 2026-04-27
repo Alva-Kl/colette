@@ -61,3 +61,48 @@ def show_splash(stdscr, quit_mode=False):
     stdscr.getch()
     stdscr.timeout(-1)
     return False
+
+
+def show_quit_confirm(stdscr, running: int) -> bool:
+    """Ask the user to confirm quitting when background tasks are still running.
+
+    Displays a centred warning with the number of running tasks and waits for
+    input. Returns True only if the user presses y (quit anyway); any other key
+    cancels and returns False.
+    """
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+
+    task_word = "task" if running == 1 else "tasks"
+    lines = [
+        f"⚠  {running} {task_word} still running",
+        "",
+        "Quit anyway?",
+        "",
+        "[ y  quit   any other key back ]",
+    ]
+
+    top = max(0, (h - len(lines)) // 2)
+    for i, line in enumerate(lines):
+        row = top + i
+        if row >= h - 1:
+            break
+        col = max(0, (w - len(line)) // 2)
+        available = w - col - 1
+        if available <= 0:
+            continue
+        text = line[:available]
+        try:
+            if i == 0:
+                stdscr.addstr(row, col, text, curses.A_BOLD)
+            elif line.startswith("["):
+                stdscr.addstr(row, col, text, curses.A_DIM)
+            else:
+                stdscr.addstr(row, col, text)
+        except curses.error:
+            pass
+
+    stdscr.refresh()
+    stdscr.timeout(-1)
+    key = stdscr.getch()
+    return key == ord("y")

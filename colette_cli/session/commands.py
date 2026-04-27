@@ -19,7 +19,7 @@ from colette_cli.utils.config import (
     load_projects,
 )
 from colette_cli.utils.formatting import bold, cyan, dim, err, info
-from colette_cli.utils.helpers import build_projects_by_machine, filter_projects_by_name, is_remote_machine
+from colette_cli.utils.helpers import build_projects_by_machine, is_remote_machine, iter_machine_projects
 from colette_cli.utils.ssh import ssh_interactive, ssh_run, ssh_flags_str, sync_remote_colette
 from colette_cli.utils.tmux import (
     create_tmux_window_with_panes,
@@ -28,6 +28,16 @@ from colette_cli.utils.tmux import (
     get_sessions,
     local_tmux_session,
 )
+
+# Suffixes appended to the project name to form all session names.
+PROJECT_SESSION_SUFFIXES = ("", "-copilot", "-logs")
+
+
+def _build_ssh_attach_command(machine, session_name) -> str:
+    """Return the SSH+tmux command to attach to *session_name* on *machine*."""
+    flags = ssh_flags_str(machine)
+    host = machine.get("host", "")
+    return f"ssh -t {flags}{host} tmux set-option -g mouse on \\; tmux attach-session -t {shlex.quote(session_name)}"
 
 
 def cmd_start(args):
@@ -41,18 +51,11 @@ def cmd_start(args):
 
     filter_machine = getattr(args, "machine", None)
     filter_names = getattr(args, "projects", None) or []
-    by_machine = build_projects_by_machine(projects, filter_machine)
 
-    if not by_machine:
+    if not build_projects_by_machine(projects, filter_machine):
         err(f"no projects found for machine '{filter_machine}'.")
 
-    for machine_name, machine_projects in sorted(by_machine.items()):
-        machine_projects = filter_projects_by_name(machine_projects, filter_names)
-        if not machine_projects:
-            continue
-        machine = get_machine(cfg, machine_name) or {}
-        is_remote = is_remote_machine(machine)
-
+    for machine_name, machine_projects, machine, is_remote in iter_machine_projects(projects, cfg, filter_machine, filter_names):
         if is_remote:
             sync_remote_colette(machine, machine_name)
 
@@ -94,19 +97,12 @@ def cmd_stop(args):
 
     filter_machine = getattr(args, "machine", None)
     filter_names = getattr(args, "projects", None) or []
-    by_machine = build_projects_by_machine(projects, filter_machine)
 
-    if not by_machine:
+    if not build_projects_by_machine(projects, filter_machine):
         err("no projects found.")
 
     cfg = load_config()
-    for machine_name, machine_projects in sorted(by_machine.items()):
-        machine_projects = filter_projects_by_name(machine_projects, filter_names)
-        if not machine_projects:
-            continue
-        machine = get_machine(cfg, machine_name)
-        is_remote = is_remote_machine(machine)
-
+    for machine_name, machine_projects, machine, is_remote in iter_machine_projects(projects, cfg, filter_machine, filter_names):
         print(f"\n{bold(f'[{machine_name}]')}")
 
         for project in sorted(machine_projects, key=lambda x: x["name"]):
@@ -123,11 +119,11 @@ def cmd_stop(args):
                 "onstop",
                 fail_on_error=False,
             )
-            if is_remote:
-                for session in [name, f"{name}-copilot", f"{name}-logs"]:
+            for suffix in PROJECT_SESSION_SUFFIXES:
+                session = f"{name}{suffix}"
+                if is_remote:
                     ssh_run(machine, f"tmux kill-session -t {shlex.quote(session)} 2>/dev/null")
-            else:
-                for session in [name, f"{name}-copilot", f"{name}-logs"]:
+                else:
                     subprocess.run(
                         ["tmux", "kill-session", "-t", session],
                         capture_output=True,
@@ -147,18 +143,12 @@ def cmd_update(args):
 
     filter_machine = getattr(args, "machine", None)
     filter_names = getattr(args, "projects", None) or []
-    by_machine = build_projects_by_machine(projects, filter_machine)
 
-    if not by_machine:
+    if not build_projects_by_machine(projects, filter_machine):
         err(f"no projects found for machine '{filter_machine}'.")
 
     cfg = load_config()
-    for machine_name, machine_projects in sorted(by_machine.items()):
-        machine_projects = filter_projects_by_name(machine_projects, filter_names)
-        if not machine_projects:
-            continue
-        machine = get_machine(cfg, machine_name)
-        is_remote = is_remote_machine(machine)
+    for machine_name, machine_projects, machine, is_remote in iter_machine_projects(projects, cfg, filter_machine, filter_names):
         if is_remote:
             sync_remote_colette(machine, machine_name)
 
@@ -244,21 +234,16 @@ def _collect_monitor_panes(by_machine, cfg, filter_projects, wrap, session_name_
     Returns the list of (project, command) pairs with active sessions.
     """
     active = []
-    for machine_name, machine_projects in sorted(by_machine.items()):
-        machine_projects = filter_projects_by_name(machine_projects, filter_projects)
-        if not machine_projects:
-            continue
-        machine = get_machine(cfg, machine_name)
-        is_remote = is_remote_machine(machine)
+    for machine_name, machine_projects, machine, is_remote in iter_machine_projects(
+        [p for ps in by_machine.values() for p in ps], cfg, filter_names=filter_projects
+    ):
         sessions = get_sessions(machine, is_remote)
         for project in sorted(machine_projects, key=lambda x: x["name"]):
             session = session_name_fn(project)
             if session not in sessions:
                 continue
             if is_remote:
-                flags = ssh_flags_str(machine)
-                host = machine.get("host", "")
-                command = f"ssh -t {flags}{host} tmux set-option -g mouse on \\; tmux attach-session -t {shlex.quote(session)}"
+                command = _build_ssh_attach_command(machine, session)
             else:
                 command = f"tmux attach-session -t {shlex.quote(session)}"
             active.append((project, wrap(command)))
@@ -288,33 +273,24 @@ def _cmd_monitor_copilot(by_machine, cfg, filter_projects, wrap):
 def _cmd_monitor_all(by_machine, cfg, filter_projects, wrap):
     """Monitor mode: all active sessions per project, one row per project."""
     project_rows = []
-    for machine_name, machine_projects in sorted(by_machine.items()):
-        machine_projects = filter_projects_by_name(machine_projects, filter_projects)
-        if not machine_projects:
-            continue
-        machine = get_machine(cfg, machine_name)
-        is_remote = is_remote_machine(machine)
+    flat_projects = [p for ps in by_machine.values() for p in ps]
+    for machine_name, machine_projects, machine, is_remote in iter_machine_projects(
+        flat_projects, cfg, filter_names=filter_projects
+    ):
         all_sessions = get_sessions(machine, is_remote)
-
-        def _ssh_cmd(session_name):
-            flags = ssh_flags_str(machine)
-            host = machine.get("host", "")
-            return f"ssh -t {flags}{host} tmux set-option -g mouse on \\; tmux attach-session -t {shlex.quote(session_name)}"
-
         for project in sorted(machine_projects, key=lambda x: x["name"]):
             pname = project["name"]
             row_sessions = []
-
-            for label, session_name in [
-                ("standard", pname),
-                ("copilot", f"{pname}-copilot"),
-                ("logs", f"{pname}-logs"),
-            ]:
+            for label, suffix in [("standard", ""), ("copilot", "-copilot"), ("logs", "-logs")]:
+                session_name = f"{pname}{suffix}"
                 if session_name not in all_sessions:
                     continue
-                cmd = _ssh_cmd(session_name) if is_remote else f"tmux attach-session -t {shlex.quote(session_name)}"
+                cmd = (
+                    _build_ssh_attach_command(machine, session_name)
+                    if is_remote
+                    else f"tmux attach-session -t {shlex.quote(session_name)}"
+                )
                 row_sessions.append((label, wrap(cmd)))
-
             if row_sessions:
                 project_rows.append((project, row_sessions))
 
@@ -367,9 +343,8 @@ def cmd_logs(args):
             return
 
         filter_machine = getattr(args, "machine", None)
-        by_machine = build_projects_by_machine(projects, filter_machine)
 
-        if not by_machine:
+        if not build_projects_by_machine(projects, filter_machine):
             if filter_machine:
                 err(
                     f"no projects found for machine '{filter_machine}'. "
@@ -379,9 +354,7 @@ def cmd_logs(args):
                 err("no projects found. Create one with: colette create <name>")
 
         active = []
-        for machine_name, machine_projects in sorted(by_machine.items()):
-            machine = get_machine(cfg, machine_name)
-            is_remote = is_remote_machine(machine)
+        for machine_name, machine_projects, machine, is_remote in iter_machine_projects(projects, cfg, filter_machine):
             for project in sorted(machine_projects, key=lambda x: x["name"]):
                 template_name = get_project_template_name(project)
                 template_metadata = get_template_metadata(machine, machine_name, template_name)

@@ -138,6 +138,34 @@ class TestShowSplash:
         assert 2000 not in timeout_calls
 
 
+class TestShowQuitConfirm:
+    def _confirm(self, key):
+        from colette_cli.tui.splash import show_quit_confirm
+        scr = _make_stdscr([key])
+        scr.timeout = MagicMock()
+        return show_quit_confirm(scr, running=1)
+
+    def test_y_returns_true(self):
+        assert self._confirm(ord("y")) is True
+
+    def test_other_key_returns_false(self):
+        assert self._confirm(ord("n")) is False
+
+    def test_enter_returns_false(self):
+        assert self._confirm(ord("\n")) is False
+
+    def test_escape_returns_false(self):
+        assert self._confirm(27) is False
+
+    def test_plural_tasks(self):
+        """Smoke test with multiple running tasks (no error)."""
+        from colette_cli.tui.splash import show_quit_confirm
+        scr = _make_stdscr([ord("y")])
+        scr.timeout = MagicMock()
+        result = show_quit_confirm(scr, running=3)
+        assert result is True
+
+
 # ---------------------------------------------------------------------------
 # App loop (_run) — navigation
 # ---------------------------------------------------------------------------
@@ -199,6 +227,190 @@ class TestAppLoop:
         )
         # Startup splash + quit-mode splash both called
         assert mock_splash.call_count == 2
+
+    def _run_with_keys_and_confirm(
+        self, tmp_config, keys, splash_returns=None, confirm_returns=None, running_tasks=0
+    ):
+        """Like _run_with_keys but also mocks show_quit_confirm and state.running_tasks."""
+        import colette_cli.tui.state as state
+        from colette_cli.utils.config import save_config, save_projects
+        save_config({
+            "machines": {"local": {"type": "local", "projects_dir": "/tmp", "templates": []}},
+            "default_machine": "local",
+        })
+        save_projects([])
+
+        orig_running = state.running_tasks
+        state.running_tasks = running_tasks
+        try:
+            scr = _make_stdscr(keys)
+            scr.timeout = MagicMock()
+
+            splash_side = splash_returns if splash_returns is not None else [False]
+            confirm_side = confirm_returns if confirm_returns is not None else []
+            from colette_cli.tui.app import _run
+            with patch("colette_cli.tui.app.show_splash", side_effect=splash_side), \
+                 patch("colette_cli.tui.app.show_quit_confirm", side_effect=confirm_side) as mock_confirm, \
+                 patch("curses.curs_set"), \
+                 patch("curses.use_default_colors"):
+                _run(scr)
+            return mock_confirm
+        finally:
+            state.running_tasks = orig_running
+
+    # -- q / Escape with running tasks --
+
+    def test_q_with_running_tasks_shows_confirm(self, tmp_config):
+        """q while tasks run must prompt for confirmation."""
+        mock_confirm = self._run_with_keys_and_confirm(
+            tmp_config, [ord("q")],
+            splash_returns=[False],
+            confirm_returns=[True],
+            running_tasks=1,
+        )
+        assert mock_confirm.call_count == 1
+        _, kwargs = mock_confirm.call_args
+        assert kwargs.get("running", mock_confirm.call_args[0][1] if len(mock_confirm.call_args[0]) > 1 else None) == 1 \
+            or mock_confirm.call_args[0][1] == 1
+
+    def test_q_with_running_tasks_confirm_yes_quits(self, tmp_config):
+        """q + confirm y → TUI exits (show_splash only called once for startup)."""
+        with patch("colette_cli.tui.app.show_splash", side_effect=[False]) as mock_splash, \
+             patch("colette_cli.tui.app.show_quit_confirm", return_value=True), \
+             patch("curses.curs_set"), \
+             patch("curses.use_default_colors"):
+            import colette_cli.tui.state as state
+            from colette_cli.utils.config import save_config, save_projects
+            save_config({
+                "machines": {"local": {"type": "local", "projects_dir": "/tmp", "templates": []}},
+                "default_machine": "local",
+            })
+            save_projects([])
+            orig = state.running_tasks
+            state.running_tasks = 2
+            try:
+                from colette_cli.tui.app import _run
+                scr = _make_stdscr([ord("q")])
+                scr.timeout = MagicMock()
+                _run(scr)
+            finally:
+                state.running_tasks = orig
+        assert mock_splash.call_count == 1  # only startup splash
+
+    def test_q_with_running_tasks_confirm_no_stays(self, tmp_config):
+        """q + confirm n → stays in TUI; second q (no tasks) exits."""
+        import colette_cli.tui.state as state
+        from colette_cli.utils.config import save_config, save_projects
+        save_config({
+            "machines": {"local": {"type": "local", "projects_dir": "/tmp", "templates": []}},
+            "default_machine": "local",
+        })
+        save_projects([])
+
+        confirm_calls = []
+
+        def _confirm(stdscr, running):
+            confirm_calls.append(running)
+            # After first refusal, clear running tasks so second q exits cleanly
+            state.running_tasks = 0
+            return False
+
+        orig = state.running_tasks
+        state.running_tasks = 1
+        try:
+            scr = _make_stdscr([ord("q"), ord("q")])
+            scr.timeout = MagicMock()
+            from colette_cli.tui.app import _run
+            with patch("colette_cli.tui.app.show_splash", side_effect=[False]), \
+                 patch("colette_cli.tui.app.show_quit_confirm", side_effect=_confirm), \
+                 patch("curses.curs_set"), \
+                 patch("curses.use_default_colors"):
+                _run(scr)
+        finally:
+            state.running_tasks = orig
+
+        assert confirm_calls == [1]  # confirm shown once for the first q
+
+    # -- ← at root with running tasks --
+
+    def test_left_at_root_with_running_tasks_shows_confirm(self, tmp_config):
+        """← at root while tasks run must prompt before the quit-mode splash."""
+        import curses
+        import colette_cli.tui.state as state
+        from colette_cli.utils.config import save_config, save_projects
+        save_config({
+            "machines": {"local": {"type": "local", "projects_dir": "/tmp", "templates": []}},
+            "default_machine": "local",
+        })
+        save_projects([])
+
+        orig = state.running_tasks
+        state.running_tasks = 1
+        try:
+            scr = _make_stdscr([curses.KEY_LEFT])
+            scr.timeout = MagicMock()
+            from colette_cli.tui.app import _run
+            with patch("colette_cli.tui.app.show_splash", side_effect=[False, True]) as mock_splash, \
+                 patch("colette_cli.tui.app.show_quit_confirm", return_value=True) as mock_confirm, \
+                 patch("curses.curs_set"), \
+                 patch("curses.use_default_colors"):
+                _run(scr)
+        finally:
+            state.running_tasks = orig
+
+        assert mock_confirm.call_count == 1
+
+    def test_left_at_root_with_running_tasks_confirm_no_stays(self, tmp_config):
+        """← at root + confirm n → stays, no quit-mode splash shown."""
+        import curses
+        import colette_cli.tui.state as state
+        from colette_cli.utils.config import save_config, save_projects
+        save_config({
+            "machines": {"local": {"type": "local", "projects_dir": "/tmp", "templates": []}},
+            "default_machine": "local",
+        })
+        save_projects([])
+
+        orig = state.running_tasks
+        state.running_tasks = 1
+        try:
+            scr = _make_stdscr([curses.KEY_LEFT, ord("q")])
+            scr.timeout = MagicMock()
+            from colette_cli.tui.app import _run
+            with patch("colette_cli.tui.app.show_splash", side_effect=[False]) as mock_splash, \
+                 patch("colette_cli.tui.app.show_quit_confirm", return_value=False) as mock_confirm, \
+                 patch("curses.curs_set"), \
+                 patch("curses.use_default_colors"):
+                # After ← is refused, state has tasks; second q will also be refused
+                # unless we clear tasks. Simulate clearing after confirm.
+                def _confirm(stdscr, running):
+                    state.running_tasks = 0
+                    return False
+                mock_confirm.side_effect = _confirm
+                _run(scr)
+        finally:
+            state.running_tasks = orig
+
+        # quit-mode splash never called (confirm blocked it)
+        assert mock_splash.call_count == 1
+
+    # -- No tasks: no confirmation --
+
+    def test_q_without_running_tasks_no_confirm(self, tmp_config):
+        """q with no running tasks must NOT show confirmation."""
+        import colette_cli.tui.state as state
+        orig = state.running_tasks
+        state.running_tasks = 0
+        try:
+            mock_confirm = self._run_with_keys_and_confirm(
+                tmp_config, [ord("q")],
+                splash_returns=[False],
+                confirm_returns=[],
+                running_tasks=0,
+            )
+        finally:
+            state.running_tasks = orig
+        assert mock_confirm.call_count == 0
 
 
 class TestNotificationsKey:

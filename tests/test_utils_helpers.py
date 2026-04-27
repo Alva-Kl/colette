@@ -734,3 +734,90 @@ class TestEnsureSessionRemote:
         assert result is True
         assert capsys.readouterr().err == ""
 
+
+
+
+class TestIterMachineProjects:
+    """iter_machine_projects yields (machine_name, projects, machine, is_remote)."""
+
+    def _make_projects(self):
+        return [
+            {"name": "a", "machine": "local"},
+            {"name": "b", "machine": "local"},
+            {"name": "c", "machine": "remote"},
+        ]
+
+    def _make_cfg(self):
+        return {
+            "machines": {
+                "local": {"type": "local"},
+                "remote": {"type": "ssh", "host": "myhost"},
+            }
+        }
+
+    def test_yields_all_machines_no_filter(self, tmp_config):
+        from colette_cli.utils.helpers import iter_machine_projects
+        projects = self._make_projects()
+        cfg = self._make_cfg()
+        results = list(iter_machine_projects(projects, cfg))
+        machine_names = [r[0] for r in results]
+        assert sorted(machine_names) == ["local", "remote"]
+
+    def test_yields_correct_project_lists(self, tmp_config):
+        from colette_cli.utils.helpers import iter_machine_projects
+        projects = self._make_projects()
+        cfg = self._make_cfg()
+        by_name = {r[0]: r[1] for r in iter_machine_projects(projects, cfg)}
+        assert [p["name"] for p in by_name["local"]] == ["a", "b"]
+        assert [p["name"] for p in by_name["remote"]] == ["c"]
+
+    def test_filter_machine(self, tmp_config):
+        from colette_cli.utils.helpers import iter_machine_projects
+        projects = self._make_projects()
+        cfg = self._make_cfg()
+        results = list(iter_machine_projects(projects, cfg, filter_machine="local"))
+        assert len(results) == 1
+        assert results[0][0] == "local"
+
+    def test_filter_names(self, tmp_config):
+        from colette_cli.utils.helpers import iter_machine_projects
+        projects = self._make_projects()
+        cfg = self._make_cfg()
+        results = list(iter_machine_projects(projects, cfg, filter_names=["a"]))
+        machine_names = [r[0] for r in results]
+        assert "remote" not in machine_names
+        local_result = next(r for r in results if r[0] == "local")
+        assert [p["name"] for p in local_result[1]] == ["a"]
+
+    def test_is_remote_flag(self, tmp_config):
+        from colette_cli.utils.helpers import iter_machine_projects
+        projects = self._make_projects()
+        cfg = self._make_cfg()
+        by_name = {r[0]: r[3] for r in iter_machine_projects(projects, cfg)}
+        assert by_name["local"] is False
+        assert by_name["remote"] is True
+
+    def test_skips_machine_when_all_projects_filtered_out(self, tmp_config):
+        from colette_cli.utils.helpers import iter_machine_projects
+        projects = self._make_projects()
+        cfg = self._make_cfg()
+        # filter_names matches only "a" in local; remote should be skipped
+        results = list(iter_machine_projects(projects, cfg, filter_names=["a"]))
+        assert all(r[0] != "remote" for r in results)
+
+    def test_sorted_by_machine_name(self, tmp_config):
+        from colette_cli.utils.helpers import iter_machine_projects
+        projects = self._make_projects()
+        cfg = self._make_cfg()
+        names = [r[0] for r in iter_machine_projects(projects, cfg)]
+        assert names == sorted(names)
+
+    def test_unknown_machine_resolves_to_empty_dict(self, tmp_config):
+        from colette_cli.utils.helpers import iter_machine_projects
+        projects = [{"name": "x", "machine": "ghost"}]
+        cfg = {"machines": {}}
+        results = list(iter_machine_projects(projects, cfg))
+        assert len(results) == 1
+        _, _, machine, is_remote = results[0]
+        assert machine == {}
+        assert is_remote is False

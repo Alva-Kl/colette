@@ -12,7 +12,7 @@ from colette_cli.utils.formatting import err
 
 from .menu import Menu, QUIT, NOTIFICATIONS
 from .screens import main_menu_items, notifications_screen_items
-from .splash import show_splash
+from .splash import show_splash, show_quit_confirm
 from . import state
 
 
@@ -35,6 +35,12 @@ def _run(stdscr):
         selected = Menu(stdscr, items, breadcrumb).run()
 
         if selected is QUIT:
+            with state.running_tasks_lock:
+                running = state.running_tasks
+            if running > 0 and not show_quit_confirm(stdscr, running):
+                stdscr.clear()
+                stdscr.refresh()
+                continue
             break  # q or Escape → exit immediately
 
         if selected is NOTIFICATIONS:
@@ -46,7 +52,14 @@ def _run(stdscr):
             if len(stack) > 1:
                 stack.pop()
             else:
-                # At root: show splash in quit mode; ←/q quits, anything else stays
+                # At root: check for running tasks first, then show splash in quit mode;
+                # ←/q quits, anything else stays
+                with state.running_tasks_lock:
+                    running = state.running_tasks
+                if running > 0 and not show_quit_confirm(stdscr, running):
+                    stdscr.clear()
+                    stdscr.refresh()
+                    continue
                 if show_splash(stdscr, quit_mode=True):
                     break
                 stdscr.clear()

@@ -27,6 +27,24 @@ def is_remote_machine(machine):
     return bool(machine and machine.get("type") == "ssh")
 
 
+def iter_machine_projects(projects, cfg, filter_machine=None, filter_names=None):
+    """Yield (machine_name, machine_projects, machine, is_remote) for each machine.
+
+    Groups *projects* by machine (optionally filtered by *filter_machine*),
+    applies *filter_names* per machine, and resolves the machine config and
+    remote flag from *cfg*. Skips machines with no matching projects after
+    filtering.
+    """
+    from colette_cli.utils.config import get_machine
+    by_machine = build_projects_by_machine(projects, filter_machine)
+    for machine_name, machine_projects in sorted(by_machine.items()):
+        machine_projects = filter_projects_by_name(machine_projects, filter_names or [])
+        if not machine_projects:
+            continue
+        machine = get_machine(cfg, machine_name) or {}
+        yield machine_name, machine_projects, machine, is_remote_machine(machine)
+
+
 def detect_project_from_cwd():
     """Return the project name whose path matches the current working directory, or None."""
     from colette_cli.utils.config import load_projects
