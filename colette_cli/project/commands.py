@@ -329,11 +329,11 @@ def _open_copilot_session(name, project_path, machine=None, is_remote=False):
         if is_remote:
             tmux_cmd = (
                 f"tmux set-option -g mouse on \\; new-session -A -s {shlex.quote(tmux_session_name)} "
-                f"-c {shlex.quote(project_path)} bash -lc copilot"
+                f"-c {shlex.quote(project_path)} bash -lc 'copilot --resume'"
             )
             ssh_interactive(machine, tmux_cmd)
         else:
-            local_tmux_session(tmux_session_name, project_path, "copilot")
+            local_tmux_session(tmux_session_name, project_path, "copilot --resume")
 
 
 def cmd_copilot(args):

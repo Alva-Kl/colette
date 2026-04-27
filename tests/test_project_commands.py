@@ -296,7 +296,7 @@ class TestCmdCopilot:
         call_args = mock_tmux.call_args
         assert call_args[0][0] == "my-project-copilot"
         assert call_args[0][1] == project_path
-        assert call_args[0][2] == "copilot"
+        assert call_args[0][2] == "copilot --resume"
 
     def test_copilot_local_existing_session_attaches(self, tmp_config, tmp_path):
         from colette_cli.utils.config import save_config, save_projects
@@ -474,7 +474,7 @@ class TestCwdAutoDetect:
             cmd_copilot(args)
 
         tmux_cmd = mock_ssh.call_args[0][1]
-        assert "bash -lc copilot" in tmux_cmd
+        assert "bash -lc 'copilot --resume'" in tmux_cmd
 
     def test_copilot_remote_with_port_uses_port_in_ssh(self, tmp_config):
         from colette_cli.utils.config import save_config, save_projects
