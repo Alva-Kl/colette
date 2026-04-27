@@ -311,6 +311,7 @@ class TestProjectActionItems:
         project = make_project("my-proj")
         with patch("colette_cli.project.cmd_delete") as mock_delete, \
              patch("colette_cli.tui.forms.type_to_confirm", return_value=True), \
+             patch("colette_cli.tui.forms.confirm", return_value=True), \
              patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
             items = self._get_items(project)
             next(i for i in items if i.label == "Delete").run()

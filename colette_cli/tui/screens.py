@@ -700,9 +700,8 @@ def project_action_items(project):
             expected=name,
         ):
             return
-        if is_remote:
-            if not confirm(f"Will delete: {project['path']}", default=False):
-                return
+        if not confirm(f"Will delete: {project['path']}", default=False):
+            return
         _async_popup(lambda: cmd_delete(Namespace(name=name), skip_confirmation=True), f"Delete {name}")()
 
     return [

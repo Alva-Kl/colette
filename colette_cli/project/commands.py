@@ -212,20 +212,21 @@ def cmd_delete(args, skip_confirmation: bool = False):
         fail_on_error=False,
     )
 
+    raw_path = project.get("path", "").strip()
+    if not raw_path:
+        err("refusing to delete: project path is empty")
+    if not raw_path.startswith("/"):
+        err(f"refusing to delete: project path is not absolute: '{raw_path}'")
+    parts = [p for p in raw_path.split("/") if p]
+    if len(parts) < 3:
+        err(f"refusing to delete: project path is too shallow (must have at least 3 components): '{raw_path}'")
+
     if is_remote:
-        remote_path = project.get("path", "").strip()
-        if not remote_path:
-            err("refusing to delete: project path is empty")
-        if not remote_path.startswith("/"):
-            err(f"refusing to delete: remote path is not absolute: '{remote_path}'")
-        parts = [p for p in remote_path.split("/") if p]
-        if len(parts) < 3:
-            err(f"refusing to delete: remote path is too shallow (must have at least 3 components): '{remote_path}'")
-        result = ssh_run(machine, f"rm -rf {shlex.quote(remote_path)}")
+        result = ssh_run(machine, f"rm -rf {shlex.quote(raw_path)}")
         if result.returncode != 0:
             err(f"failed to remove remote directory: {result.stderr.strip()}")
     else:
-        path = Path(project["path"]).expanduser()
+        path = Path(raw_path).expanduser()
         if path.exists():
             shutil.rmtree(str(path))
 
