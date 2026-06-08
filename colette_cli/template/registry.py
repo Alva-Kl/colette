@@ -123,7 +123,7 @@ def get_template_metadata(machine, machine_name, template_name):
         return None
 
     machine_entry = next(
-        (t for t in (machine.get("templates") or []) if t.get("name") == template_name),
+        (t for t in ((machine or {}).get("templates") or []) if t.get("name") == template_name),
         {},
     )
     metadata = {"name": template_name}

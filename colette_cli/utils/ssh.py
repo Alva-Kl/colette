@@ -1,6 +1,7 @@
 """SSH utilities for connecting to remote machines."""
 
 import json
+import os
 import shlex
 import subprocess
 import threading
@@ -99,22 +100,45 @@ def ssh_run(machine, remote_cmd, extra_opts=None):
 
 
 def ssh_interactive(machine, remote_cmd):
-    """Run a command on a remote machine with a TTY allocated."""
-    base = _ssh_base_args(machine)
-    # Insert -t right after "ssh" to force TTY allocation.
-    cmd = [base[0], "-t"] + base[1:] + [remote_cmd]
-    subprocess.run(cmd)
+    """Run a command on a remote machine with a TTY allocated.
+
+    When called from inside a local tmux session, temporarily disables mouse
+    mode for the current window so that scroll events pass through to the remote
+    tmux session instead of being captured by the outer local tmux.  The
+    window-level override is removed unconditionally when SSH exits, restoring
+    the inherited (session / global) mouse setting.
+    """
+    inside_tmux = bool(os.environ.get("TMUX"))
+    if inside_tmux:
+        subprocess.run(
+            ["tmux", "set-window-option", "mouse", "off"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+        )
+    try:
+        base = _ssh_base_args(machine)
+        # Insert -t right after "ssh" to force TTY allocation.
+        cmd = [base[0], "-t"] + base[1:] + [remote_cmd]
+        subprocess.run(cmd)
+    finally:
+        if inside_tmux:
+            subprocess.run(
+                ["tmux", "set-window-option", "-u", "mouse"],
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+            )
 
 
 def inject_project_config(machine, machine_name, project):
     """Inject hook files and JSON config for a project onto a remote machine.
 
-    Transfers project hooks and (if applicable) template hooks file-by-file via
-    SSH without compression. Merges the project and template entries into the
-    remote projects.json / templates.json. Warns and returns False on any failure.
+    Transfers project hooks, template hooks, and machine-specific template hook
+    overrides file-by-file via SSH. Merges the project and template entries into
+    the remote projects.json / templates.json. Warns and returns False on any failure.
     """
     from colette_cli.utils.config import (
         load_templates,
+        MACHINE_SCRIPTS_DIR,
         PROJECT_HOOKS_DIR,
         TEMPLATE_SCRIPTS_DIR,
     )
@@ -168,6 +192,26 @@ def inject_project_config(machine, machine_name, project):
                     if not _ssh_write(remote_path, hook_file.read_bytes()):
                         warn(f"inject: failed to transfer '{hook_file.name}' to '{machine_name}'")
 
+    # Transfer machine-specific template hook overrides
+    if template_name:
+        machine_tmpl_hooks_dir = MACHINE_SCRIPTS_DIR / machine_name / "templates" / template_name
+        if machine_tmpl_hooks_dir.exists():
+            remote_machine_tmpl_dir = (
+                f"{remote_base}/machines/{machine_name}/templates/{template_name}"
+            )
+            if not _ssh_mkdir(remote_machine_tmpl_dir):
+                warn(
+                    f"inject: failed to create remote machine template hooks dir on '{machine_name}'"
+                )
+                return False
+            for hook_file in machine_tmpl_hooks_dir.iterdir():
+                if hook_file.is_file():
+                    remote_path = f"{remote_machine_tmpl_dir}/{hook_file.name}"
+                    if not _ssh_write(remote_path, hook_file.read_bytes()):
+                        warn(
+                            f"inject: failed to transfer machine hook '{hook_file.name}' to '{machine_name}'"
+                        )
+
     # Merge projects.json on remote
     result = ssh_run(machine, f"cat {remote_base}/projects.json 2>/dev/null || echo '[]'")
     try:
@@ -204,6 +248,22 @@ def inject_project_config(machine, machine_name, project):
             templates_json = json.dumps({"templates": remote_tmpl_list}, indent=2).encode()
             if not _ssh_write(f"{remote_base}/templates.json", templates_json):
                 warn(f"inject: failed to write templates.json on '{machine_name}'")
+
+    # Merge machine entry into config.json on remote so `colette attach` works
+    # when invoked directly on the remote machine (machine appears as local there).
+    result = ssh_run(machine, f"cat {remote_base}/config.json 2>/dev/null || echo '{{}}'")
+    try:
+        remote_cfg = json.loads(result.stdout or "{}")
+        if not isinstance(remote_cfg, dict):
+            remote_cfg = {}
+    except json.JSONDecodeError:
+        remote_cfg = {}
+    remote_machines = remote_cfg.setdefault("machines", {})
+    if project["machine"] not in remote_machines:
+        remote_machines[project["machine"]] = {"type": "local"}
+        config_json = json.dumps(remote_cfg, indent=2).encode()
+        if not _ssh_write(f"{remote_base}/config.json", config_json):
+            warn(f"inject: failed to write config.json on '{machine_name}'")
 
     return True
 

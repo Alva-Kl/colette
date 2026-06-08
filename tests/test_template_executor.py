@@ -699,3 +699,56 @@ class TestMachineSpecificHookResolution:
         ]}
         run_template_hook(project, machine, "myhost", False, template_metadata, "onstart")
         assert marker.read_text().strip() == "8080"
+
+
+class TestRunOnupdateForTemplate:
+    """run_onupdate_for_template runs the onupdate hook with coletterc prepended."""
+
+    def test_returns_true_when_no_hook(self, tmp_config):
+        from colette_cli.template.executor import run_onupdate_for_template
+        result = run_onupdate_for_template("tmpl", {}, "local", False, {})
+        assert result is True
+
+    def test_runs_onupdate_hook_successfully(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import write_template_hook
+        from colette_cli.template.executor import run_onupdate_for_template
+        marker = tmp_path / "marker.txt"
+        write_template_hook("tmpl", "onupdate", f"#!/usr/bin/env bash\necho ran > {marker}")
+        result = run_onupdate_for_template("tmpl", {}, "local", False, {"name": "tmpl"}, template_path=str(tmp_path))
+        assert result is True
+        assert marker.read_text().strip() == "ran"
+
+    def test_coletterc_is_applied_before_onupdate(self, tmp_config, tmp_path):
+        """coletterc is sourced before the onupdate hook."""
+        from colette_cli.utils.config import write_template_hook
+        from colette_cli.template.executor import run_onupdate_for_template
+        marker = tmp_path / "order.txt"
+        write_template_hook("tmpl", "coletterc", "export RC_RAN=1\n")
+        write_template_hook("tmpl", "onupdate", f"#!/usr/bin/env bash\necho $RC_RAN > {marker}")
+        result = run_onupdate_for_template("tmpl", {}, "local", False, {"name": "tmpl"}, template_path=str(tmp_path))
+        assert result is True
+        assert marker.read_text().strip() == "1"
+
+    def test_failed_hook_returns_false(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import write_template_hook
+        from colette_cli.template.executor import run_onupdate_for_template
+        write_template_hook("tmpl", "onupdate", "#!/usr/bin/env bash\nexit 1")
+        result = run_onupdate_for_template("tmpl", {}, "local", False, {"name": "tmpl"}, template_path=str(tmp_path))
+        assert result is False
+
+    def test_failed_hook_exits_when_fail_on_error(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import write_template_hook
+        from colette_cli.template.executor import run_onupdate_for_template
+        write_template_hook("tmpl", "onupdate", "#!/usr/bin/env bash\nexit 42")
+        with pytest.raises(SystemExit):
+            run_onupdate_for_template("tmpl", {}, "local", False, {"name": "tmpl"}, template_path=str(tmp_path), fail_on_error=True)
+
+    def test_template_params_available_in_onupdate(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import write_template_hook
+        from colette_cli.template.executor import run_onupdate_for_template
+        marker = tmp_path / "param.txt"
+        write_template_hook("tmpl", "onupdate", f"#!/usr/bin/env bash\necho $COLETTE_PARAM_ENV > {marker}")
+        metadata = {"name": "tmpl", "params": {"ENV": "staging"}}
+        result = run_onupdate_for_template("tmpl", {}, "local", False, metadata, template_path=str(tmp_path))
+        assert result is True
+        assert marker.read_text().strip() == "staging"

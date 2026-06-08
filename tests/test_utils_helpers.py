@@ -665,6 +665,35 @@ class TestSyncRemoteColette:
         mkdir_cmds = [c for c in all_cmds if "mkdir" in c]
         assert all("$HOME" in c for c in mkdir_cmds), f"mkdir not using $HOME: {mkdir_cmds}"
 
+    def test_transfers_machine_template_hooks_when_present(self, tmp_config):
+        """Machine-specific template hook overrides must be transferred to the remote."""
+        from unittest.mock import patch, MagicMock
+        from colette_cli.utils.ssh import inject_project_config
+        from colette_cli.utils.config import save_projects, save_templates, MACHINE_SCRIPTS_DIR
+
+        project = {"name": "proj3", "machine": "remote-box", "path": "/p/proj3", "template": "mytmpl"}
+        save_projects([project])
+        save_templates({"templates": [{"name": "mytmpl"}]})
+
+        machine_tmpl_dir = MACHINE_SCRIPTS_DIR / "remote-box" / "templates" / "mytmpl"
+        machine_tmpl_dir.mkdir(parents=True, exist_ok=True)
+        (machine_tmpl_dir / ".onstart").write_text("#!/bin/bash\necho machine-override")
+
+        machine = {"type": "ssh", "host": "myhost"}
+        ok = MagicMock()
+        ok.returncode = 0
+        ok.stdout = "[]"
+
+        with patch("colette_cli.utils.ssh.ssh_run", return_value=ok), \
+             patch("subprocess.run", return_value=ok) as mock_run:
+            result = inject_project_config(machine, "remote-box", project)
+
+        assert result is True
+        write_calls = [c for c in mock_run.call_args_list if "cat >" in (c.args[0][-1] if c.args else "")]
+        machine_hook_calls = [c for c in write_calls if "machines/remote-box/templates/mytmpl" in c.args[0][-1]]
+        assert machine_hook_calls, "machine-specific template hook was not transferred"
+        assert any(".onstart" in c.args[0][-1] for c in machine_hook_calls)
+
     def test_warns_and_returns_false_on_mkdir_failure(self, tmp_config, capsys):
         from unittest.mock import patch, MagicMock
         from colette_cli.utils.ssh import inject_project_config

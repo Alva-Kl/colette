@@ -274,6 +274,98 @@ class TestCmdCreate:
         projects = load_projects()
         assert any(p["name"] == "my-project" for p in projects)
 
+    def test_create_local_no_template(self, tmp_config, tmp_path):
+        """Creates an empty directory when no template is given (local machine)."""
+        from colette_cli.utils.config import save_config, load_projects
+        from colette_cli.project.commands import cmd_create
+
+        projects_dir = tmp_path / "projects"
+        cfg = {
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": str(projects_dir),
+                    "templates": [],
+                }
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        args = MagicMock()
+        args.name = "bare-project"
+        args.machine = "local"
+        args.template = None
+
+        cmd_create(args)
+
+        assert (projects_dir / "bare-project").is_dir()
+        projects = load_projects()
+        assert any(p["name"] == "bare-project" and p["template"] is None for p in projects)
+
+    def test_create_remote_no_template(self, tmp_config, tmp_path):
+        """Creates a directory via ssh mkdir when no template is given (remote machine)."""
+        from colette_cli.utils.config import save_config, load_projects
+        from colette_cli.project.commands import cmd_create
+
+        cfg = {
+            "machines": {
+                "remote": {
+                    "type": "ssh",
+                    "host": "myhost",
+                    "projects_dir": "/home/user/projects",
+                    "templates": [],
+                }
+            },
+            "default_machine": "remote",
+        }
+        save_config(cfg)
+        args = MagicMock()
+        args.name = "bare-remote"
+        args.machine = "remote"
+        args.template = None
+
+        no_exists = MagicMock(stdout="", returncode=0)
+        mkdir_ok = MagicMock(stdout="", returncode=0)
+
+        with patch("colette_cli.project.commands.ssh_run", side_effect=[no_exists, mkdir_ok]) as mock_ssh:
+            cmd_create(args)
+
+        calls = [c[0][1] for c in mock_ssh.call_args_list]
+        assert any("mkdir" in c for c in calls)
+        projects = load_projects()
+        assert any(p["name"] == "bare-remote" and p["template"] is None for p in projects)
+
+    def test_create_local_skips_template_when_blank_input(self, tmp_config, tmp_path):
+        """Pressing Enter at the template prompt creates an empty project."""
+        from colette_cli.utils.config import save_config, load_projects
+        from colette_cli.project.commands import cmd_create
+
+        projects_dir = tmp_path / "projects"
+        template_dir = tmp_path / "tmpl-source"
+        template_dir.mkdir()
+        cfg = {
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": str(projects_dir),
+                    "templates": [{"name": "tmpl", "type": "directory", "path": str(template_dir)}],
+                }
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        args = MagicMock()
+        args.name = "scratch-project"
+        args.machine = "local"
+        args.template = None
+
+        with patch("builtins.input", return_value=""):
+            cmd_create(args)
+
+        assert (projects_dir / "scratch-project").is_dir()
+        projects = load_projects()
+        assert any(p["name"] == "scratch-project" and p["template"] is None for p in projects)
+
 
 class TestCmdCopilot:
     def test_copilot_local_no_existing_session_starts_copilot(self, tmp_config, tmp_path):
@@ -496,7 +588,9 @@ class TestCwdAutoDetect:
              patch("colette_cli.utils.ssh.subprocess.run") as mock_run:
             cmd_copilot(args)
 
-        ssh_cmd = mock_run.call_args[0][0]
+        ssh_calls = [c.args[0] for c in mock_run.call_args_list if c.args and c.args[0][0] == "ssh"]
+        assert ssh_calls, "expected an SSH call"
+        ssh_cmd = ssh_calls[0]
         assert "-p" in ssh_cmd
         assert "24" in ssh_cmd
 
@@ -642,3 +736,70 @@ class TestCmdUnlinkTemplateGuard:
         args.name = "my-tmpl"
         with pytest.raises(SystemExit):
             cmd_unlink(args)
+
+
+class TestSshInteractiveNestedTmux:
+    """ssh_interactive disables local tmux mouse when called from inside tmux."""
+
+    def _machine(self):
+        return {"host": "server"}
+
+    def test_outside_tmux_no_mouse_ops(self, monkeypatch):
+        """When not inside tmux, no tmux window-option calls are made."""
+        from colette_cli.utils.ssh import ssh_interactive
+
+        monkeypatch.delenv("TMUX", raising=False)
+        calls = []
+        with patch("colette_cli.utils.ssh.subprocess.run", side_effect=lambda *a, **kw: calls.append(a[0])):
+            ssh_interactive(self._machine(), "tmux attach-session -t foo")
+
+        tmux_option_calls = [c for c in calls if c[:3] == ["tmux", "set-window-option", "mouse"] or
+                             c[:3] == ["tmux", "set-window-option", "-u"]]
+        assert tmux_option_calls == []
+
+    def test_inside_tmux_disables_mouse_before_ssh(self, monkeypatch):
+        """When inside tmux, mouse is disabled before SSH runs."""
+        from colette_cli.utils.ssh import ssh_interactive
+
+        monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,0,0")
+        call_log = []
+        with patch("colette_cli.utils.ssh.subprocess.run",
+                   side_effect=lambda *a, **kw: call_log.append(list(a[0]))):
+            ssh_interactive(self._machine(), "tmux attach-session -t foo")
+
+        assert call_log[0] == ["tmux", "set-window-option", "mouse", "off"]
+        ssh_call = next(c for c in call_log if c[0] == "ssh")
+        assert "-t" in ssh_call
+        assert "server" in ssh_call
+
+    def test_inside_tmux_restores_mouse_after_ssh(self, monkeypatch):
+        """When inside tmux, the window-level mouse override is removed after SSH exits."""
+        from colette_cli.utils.ssh import ssh_interactive
+
+        monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,0,0")
+        call_log = []
+        with patch("colette_cli.utils.ssh.subprocess.run",
+                   side_effect=lambda *a, **kw: call_log.append(list(a[0]))):
+            ssh_interactive(self._machine(), "tmux attach-session -t foo")
+
+        assert call_log[-1] == ["tmux", "set-window-option", "-u", "mouse"]
+
+    def test_inside_tmux_restores_mouse_even_on_ssh_failure(self, monkeypatch):
+        """Mouse is restored even if SSH raises an exception."""
+        from colette_cli.utils.ssh import ssh_interactive
+
+        monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,0,0")
+        restore_calls = []
+
+        def fake_run(cmd, **kw):
+            if cmd[:3] == ["tmux", "set-window-option", "-u"]:
+                restore_calls.append(cmd)
+                return
+            if cmd[0] == "ssh":
+                raise RuntimeError("connection refused")
+
+        with patch("colette_cli.utils.ssh.subprocess.run", side_effect=fake_run):
+            with pytest.raises(RuntimeError):
+                ssh_interactive(self._machine(), "tmux attach-session -t foo")
+
+        assert restore_calls == [["tmux", "set-window-option", "-u", "mouse"]]

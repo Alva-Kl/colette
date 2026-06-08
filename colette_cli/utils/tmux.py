@@ -99,7 +99,7 @@ def get_sessions(machine, is_remote):
 
 
 def _create_tmux_window_with_panes(
-    session_name, active_commands, replace_existing=False
+    session_name, active_commands, replace_existing=False, disable_mouse=False
 ):
     """Create a tmux session/window with split panes for each command.
 
@@ -149,6 +149,13 @@ def _create_tmux_window_with_panes(
             stdin=subprocess.DEVNULL,
         )
 
+    if disable_mouse:
+        subprocess.run(
+            ["tmux", "set-window-option", "-t", target, "mouse", "off"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+        )
+
     if inside_tmux:
         info(f"Window '{session_name}' opened with {len(active_commands)} pane(s).")
     else:
@@ -159,13 +166,13 @@ def _create_tmux_window_with_panes(
 
 
 def create_tmux_window_with_panes(
-    session_name, active_commands, replace_existing=False
+    session_name, active_commands, replace_existing=False, disable_mouse=False
 ):
     """Public interface for creating tmux window with panes."""
-    _create_tmux_window_with_panes(session_name, active_commands, replace_existing)
+    _create_tmux_window_with_panes(session_name, active_commands, replace_existing, disable_mouse)
 
 
-def create_tmux_window_with_rows(session_name, project_rows, replace_existing=False):
+def create_tmux_window_with_rows(session_name, project_rows, replace_existing=False, disable_mouse=False):
     """Create a tmux session/window with one horizontal row per project.
 
     Args:
@@ -190,7 +197,7 @@ def create_tmux_window_with_rows(session_name, project_rows, replace_existing=Fa
 
     # If every project has exactly 1 session, fall back to the simple tiled layout
     if all(len(sessions) == 1 for _proj, sessions in project_rows):
-        _create_tmux_window_with_panes(session_name, all_cmds, replace_existing)
+        _create_tmux_window_with_panes(session_name, all_cmds, replace_existing, disable_mouse)
         return
 
     inside_tmux = bool(os.environ.get("TMUX"))
@@ -243,6 +250,13 @@ def create_tmux_window_with_rows(session_name, project_rows, replace_existing=Fa
                 ["tmux", "split-window", "-h", "-t", row_anchor, cmd2],
                 capture_output=True, stdin=subprocess.DEVNULL,
             )
+
+    if disable_mouse:
+        subprocess.run(
+            ["tmux", "set-window-option", "-t", window_target, "mouse", "off"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+        )
 
     if inside_tmux:
         info(f"Window '{session_name}' opened with {total_panes} pane(s).")

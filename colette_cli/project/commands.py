@@ -77,8 +77,8 @@ def cmd_create(args):
     machine = require_machine(cfg, machine_name)
     projects_dir = machine.get("projects_dir", "")
     template_names = list_machine_template_names(machine)
-    if not template_names or not projects_dir:
-        err(f"machine '{machine_name}' is missing templates or 'projects_dir'.")
+    if not projects_dir:
+        err(f"machine '{machine_name}' has no 'projects_dir' configured.")
 
     template_name = args.template
     if template_name and template_name not in template_names:
@@ -86,23 +86,23 @@ def cmd_create(args):
             f"template '{template_name}' is not available on machine '{machine_name}'. "
             f"Available templates: {', '.join(template_names)}"
         )
-    if not template_name:
-        print(f"Available templates for '{machine_name}':")
+    if not template_name and template_names:
+        print(f"Available templates for '{machine_name}' (leave blank to create an empty project):")
         for template_option in template_names:
             print(f"  - {template_option}")
-        template_name = input("Template name: ").strip()
-        if not template_name:
-            err("template name cannot be empty.")
-        if template_name not in template_names:
+        template_name = input("Template name: ").strip() or None
+        if template_name and template_name not in template_names:
             err(
                 f"template '{template_name}' is not available on machine '{machine_name}'."
             )
 
-    template_source = get_machine_template(machine, template_name)
-    if template_source["type"] == "directory" and not (template_source.get("path") or "").strip():
-        err(f"template '{template_name}' has no source path configured.")
-    if template_source["type"] == "git" and not (template_source.get("url") or "").strip():
-        err(f"template '{template_name}' has no git URL configured.")
+    template_source = None
+    if template_name:
+        template_source = get_machine_template(machine, template_name)
+        if template_source["type"] == "directory" and not (template_source.get("path") or "").strip():
+            err(f"template '{template_name}' has no source path configured.")
+        if template_source["type"] == "git" and not (template_source.get("url") or "").strip():
+            err(f"template '{template_name}' has no git URL configured.")
     template_metadata = get_template_metadata(machine, machine_name, template_name)
 
     is_remote = is_remote_machine(machine)
@@ -113,39 +113,42 @@ def cmd_create(args):
     )
 
     if is_remote:
-        if template_source["type"] == "directory":
+        result = ssh_run(machine, f"test -e {shlex.quote(project_path)} && echo exists")
+        if result.stdout.strip() == "exists":
+            err(f"path '{project_path}' already exists on remote machine.")
+
+        if not template_name:
+            result = ssh_run(machine, f"mkdir -p {shlex.quote(project_path)}")
+            if result.returncode != 0:
+                err(f"failed to create project directory on remote: {result.stderr.strip()}")
+        elif template_source["type"] == "directory":
             source_path = template_source["path"]
             result = ssh_run(machine, f"test -d {shlex.quote(source_path)} && echo ok")
             if result.stdout.strip() != "ok":
                 err(
                     f"template '{source_path}' not found on remote machine '{machine_name}'."
                 )
-        else:
-            source_path = template_source["url"]
-
-        result = ssh_run(machine, f"test -e {shlex.quote(project_path)} && echo exists")
-        if result.stdout.strip() == "exists":
-            err(f"path '{project_path}' already exists on remote machine.")
-
-        if template_source["type"] == "directory":
             result = ssh_run(
                 machine,
                 f"cp -r {shlex.quote(source_path)} {shlex.quote(project_path)}",
             )
+            if result.returncode != 0:
+                err(f"failed to create project from template on remote: {result.stderr.strip()}")
         else:
+            source_path = template_source["url"]
             result = ssh_run(
                 machine,
                 f"git clone {shlex.quote(source_path)} {shlex.quote(project_path)}",
             )
-        if result.returncode != 0:
-            err(
-                f"failed to create project from template on remote: {result.stderr.strip()}"
-            )
+            if result.returncode != 0:
+                err(f"failed to create project from template on remote: {result.stderr.strip()}")
     else:
         destination = Path(project_path).expanduser()
         if destination.exists():
             err(f"path '{destination}' already exists.")
-        if template_source["type"] == "directory":
+        if not template_name:
+            destination.mkdir(parents=True)
+        elif template_source["type"] == "directory":
             template_path = Path(template_source["path"]).expanduser()
             if not template_path.exists():
                 err(f"template '{template_path}' not found.")
