@@ -1,6 +1,12 @@
 """Template system for project lifecycle scripts and configurations."""
 
-from .executor import build_hook_command, build_project_bootstrap, run_template_hook, run_onupdate_for_template
+from .executor import (
+    build_hook_command,
+    build_project_bootstrap,
+    compute_effective_template_hook,
+    run_template_hook,
+    run_onupdate_for_template,
+)
 from .registry import (
     SCRIPT_KEYS,
     get_machine_template,
@@ -20,6 +26,7 @@ __all__ = [
     "SCRIPT_KEYS",
     "build_hook_command",
     "build_project_bootstrap",
+    "compute_effective_template_hook",
     "get_machine_template",
     "get_project_template_name",
     "get_template_metadata",

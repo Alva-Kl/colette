@@ -50,9 +50,14 @@ class TestTopLevelCommands:
         assert args.command == "attach"
         assert args.name == "proj"
 
-    def test_code_command(self, parser):
-        args = parser.parse_args(["code", "proj"])
-        assert args.command == "code"
+    def test_ide_command(self, parser):
+        args = parser.parse_args(["ide", "proj"])
+        assert args.command == "ide"
+        assert args.name == "proj"
+
+    def test_agent_command(self, parser):
+        args = parser.parse_args(["agent", "proj"])
+        assert args.command == "agent"
         assert args.name == "proj"
 
     def test_start_command_no_args(self, parser):

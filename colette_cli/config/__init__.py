@@ -15,7 +15,7 @@ from .commands import (
     cmd_config_rename_template,
     cmd_config_run_template_update,
     cmd_config_set_default,
-    cmd_config_sync_remote,
+    cmd_config_sync,
 )
 
 __all__ = [
@@ -33,5 +33,5 @@ __all__ = [
     "cmd_config_rename_template",
     "cmd_config_run_template_update",
     "cmd_config_set_default",
-    "cmd_config_sync_remote",
+    "cmd_config_sync",
 ]

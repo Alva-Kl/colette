@@ -9,6 +9,10 @@ from colette_cli.template import (
     scaffold_template_hook_files,
 )
 from colette_cli.utils.config import (
+    DEFAULT_AGENT_COMMAND,
+    DEFAULT_IDE_COMMAND_LOCAL,
+    DEFAULT_IDE_COMMAND_REMOTE,
+    get_machine,
     get_machine_template_dir,
     get_machine_template_hook_path,
     get_project_hook_path,
@@ -18,11 +22,10 @@ from colette_cli.utils.config import (
     rename_machine_template_dir,
     require_machine,
     save_config,
-    save_projects,
     scaffold_project_hook_files,
 )
-from colette_cli.utils.formatting import bold, cyan, err, info
-from colette_cli.utils.helpers import all_template_names
+from colette_cli.utils.formatting import bold, cyan, err, info, warn
+from colette_cli.utils.helpers import all_template_names, is_remote_machine, write_project_record
 
 
 def _parse_params(raw_params):
@@ -55,6 +58,18 @@ def _prompt_template_source(template_type, current=None):
     return source
 
 
+def _push_template_if_remote(machine, machine_name, template_name):
+    """Push a template's effective hooks to *machine* over SSH if it's remote.
+
+    Called after every local edit to a machine-scoped template hook (add,
+    edit, edit-hook) so the remote's own copy never goes stale.
+    """
+    if not is_remote_machine(machine):
+        return
+    from colette_cli.utils.ssh import push_template_hooks
+    push_template_hooks(machine, machine_name, template_name)
+
+
 def cmd_config_list(args):
     """List all configured machines."""
     cfg = load_config()
@@ -80,6 +95,9 @@ def cmd_config_list(args):
             f"    templates:    {', '.join(template_names) if template_names else 'N/A'}"
         )
         print(f"    projects_dir: {m.get('projects_dir', 'N/A')}")
+        default_ide = DEFAULT_IDE_COMMAND_REMOTE if mtype == "ssh" else DEFAULT_IDE_COMMAND_LOCAL
+        print(f"    agent_command: {m.get('agent_command') or DEFAULT_AGENT_COMMAND + ' (default)'}")
+        print(f"    ide_command:   {m.get('ide_command') or default_ide + ' (default)'}")
     print()
 
 
@@ -236,6 +254,22 @@ def cmd_config_edit_machine(args):
     pdir = input(f"Projects directory [{cur_pdir}]: ").strip() or cur_pdir
     machine["projects_dir"] = pdir
 
+    cur_agent = machine.get("agent_command", "")
+    agent_command = input(
+        f"Agent command [{cur_agent or DEFAULT_AGENT_COMMAND + ' (default)'}] (leave empty to keep): "
+    ).strip()
+    if agent_command:
+        machine["agent_command"] = agent_command
+
+    cur_ide = machine.get("ide_command", "")
+    default_ide = DEFAULT_IDE_COMMAND_REMOTE if mtype == "ssh" else DEFAULT_IDE_COMMAND_LOCAL
+    ide_command = input(
+        f"IDE command [{cur_ide or default_ide + ' (default)'}] (leave empty to keep, "
+        "supports {host}/{path} placeholders): "
+    ).strip()
+    if ide_command:
+        machine["ide_command"] = ide_command
+
     save_config(cfg)
     info(f"Machine '{name}' updated.")
 
@@ -308,6 +342,7 @@ def cmd_config_add_template(args):
 
     scaffold_template_hook_files(args.template_name, args.machine_name)
     info(f"Hook files: {get_machine_template_dir(args.machine_name, args.template_name)}")
+    _push_template_if_remote(machine, args.machine_name, args.template_name)
     info(f"Template '{args.template_name}' added to machine '{args.machine_name}'.")
 
 
@@ -370,6 +405,7 @@ def cmd_config_edit_template(args):
 
     scaffold_template_hook_files(args.template_name, args.machine_name)
     info(f"Hook files: {get_machine_template_dir(args.machine_name, args.template_name)}")
+    _push_template_if_remote(machine, args.machine_name, args.template_name)
     info(f"Template '{args.template_name}' updated on machine '{args.machine_name}'.")
 
 
@@ -389,6 +425,9 @@ def cmd_config_edit_hook(args):
     hook_path = get_machine_template_hook_path(machine_name, template_name, hook_name)
     subprocess.run(["nano", str(hook_path)])
 
+    machine = get_machine(load_config(), machine_name)
+    _push_template_if_remote(machine, machine_name, template_name)
+
 
 def cmd_config_edit_project_hook(args):
     """Open a project-specific hook script in nano for editing."""
@@ -398,10 +437,15 @@ def cmd_config_edit_project_hook(args):
 
     project_name = args.project_name
     hook_name = args.hook_name
-    require_project(project_name)
+    project = require_project(project_name)
     scaffold_project_hook_files(project_name)
     hook_path = get_project_hook_path(project_name, hook_name)
     subprocess.run(["nano", str(hook_path)])
+
+    machine = get_machine(load_config(), project.get("machine"))
+    if is_remote_machine(machine):
+        from colette_cli.utils.ssh import push_project_hooks
+        push_project_hooks(machine, project["machine"], project_name)
 
 
 def cmd_config_remove_template(args):
@@ -426,6 +470,10 @@ def cmd_config_remove_template(args):
     machine_hooks_dir = get_machine_template_dir(args.machine_name, args.template_name)
     if machine_hooks_dir.exists():
         shutil.rmtree(str(machine_hooks_dir))
+
+    if is_remote_machine(machine):
+        from colette_cli.utils.ssh import ssh_run
+        ssh_run(machine, f"rm -rf $HOME/.config/colette/templates/{args.template_name}")
 
     info(f"Template '{args.template_name}' removed from machine '{args.machine_name}'.")
 
@@ -482,24 +530,36 @@ def cmd_config_rename_template(args):
     save_config(cfg)
 
     rename_machine_template_dir(args.machine_name, args.old_name, new_name)
+    if is_remote_machine(machine):
+        from colette_cli.utils.ssh import ssh_run
+        old_dir = f"$HOME/.config/colette/templates/{args.old_name}"
+        new_dir = f"$HOME/.config/colette/templates/{new_name}"
+        ssh_run(machine, f"mv {old_dir} {new_dir} 2>/dev/null || true")
 
     updated = 0
     for project in projects:
         if project.get("machine") == args.machine_name and project.get("template") == args.old_name:
             project["template"] = new_name
+            write_project_record(machine, args.machine_name, project)
             updated += 1
-    if updated:
-        save_projects(projects)
 
     info(f"Template '{args.old_name}' renamed to '{new_name}' on machine '{args.machine_name}'.")
     if updated:
         info(f"Updated {updated} project(s) to use new template name.")
 
 
-def cmd_config_sync_remote(args):
-    """Sync the local colette binary and config to one or all remote machines."""
-    from colette_cli.utils.ssh import sync_remote_colette, inject_project_config
-    from colette_cli.utils.helpers import is_remote_machine
+def cmd_config_sync(args):
+    """Sync the local colette binary and pull a read-only project/template
+    cache from one or all remote machines.
+
+    Never pushes local project/template data outward — each remote machine
+    remains authoritative for its own state. This is purely a read-only pull
+    into `~/.config/colette/cache/<machine>.json`.
+    """
+    from datetime import datetime, timezone
+
+    from colette_cli.utils.config import save_machine_cache
+    from colette_cli.utils.ssh import fetch_self_report, sync_remote_colette
 
     cfg = load_config()
     machine_name = getattr(args, "machine_name", None)
@@ -524,13 +584,25 @@ def cmd_config_sync_remote(args):
         if synced is True:
             info(f"colette synced to '{name}' at {machine['colette_path']}")
         elif synced is False:
-            print(f"  {name}: already up to date.")
-        if synced is not None:
-            machine_projects = [p for p in load_projects() if p.get("machine") == name]
-            for project in machine_projects:
-                inject_project_config(machine, name, project)
-            if machine_projects:
-                info(f"Config injected for {len(machine_projects)} project(s) on '{name}'")
+            print(f"  {name}: binary already up to date.")
+
+        report = fetch_self_report(machine, name)
+        if report is None:
+            warn(f"failed to fetch project/template data from '{name}'.")
+            continue
+
+        cache_data = {
+            "machine": name,
+            "synced_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "projects_dir": report.get("machine", {}).get("projects_dir", ""),
+            "templates": report.get("machine", {}).get("templates", []),
+            "projects": report.get("projects", []),
+        }
+        save_machine_cache(name, cache_data)
+        info(
+            f"Cached {len(cache_data['projects'])} project(s) and "
+            f"{len(cache_data['templates'])} template(s) from '{name}'."
+        )
 
 
 def cmd_config(args):
@@ -559,8 +631,8 @@ def cmd_config(args):
         cmd_config_remove_machine(args)
     elif args.config_cmd == "set-default":
         cmd_config_set_default(args)
-    elif args.config_cmd == "sync-remote":
-        cmd_config_sync_remote(args)
+    elif args.config_cmd == "sync":
+        cmd_config_sync(args)
     elif args.config_cmd == "rename-template":
         cmd_config_rename_template(args)
     else:

@@ -32,15 +32,20 @@ Or run directly from the repository:
 
 ## Configuration files
 
-All state is stored under `~/.config/colette/`:
+All state is stored under `~/.config/colette/`, and is local to whichever
+machine you're looking at — **each machine only knows about its own
+projects and templates.** `config.json` additionally stores just enough
+connection info (name, SSH host/key/port) to reach other machines it knows
+about, not those machines' own data.
 
 | File / Directory | Purpose |
 |---|---|
-| `config.json` | Machine definitions and default machine |
-| `projects.json` | Registered projects |
-| `templates.json` | Template metadata (description, params) |
-| `templates/<name>/` | Hook scripts for a template |
-| `projects/<name>/` | Project-specific hook overrides |
+| `config.json` | This machine's own definition, plus connection info for known remote machines |
+| `projects.json` | This machine's own registered projects (never a remote's) |
+| `templates.json` | Legacy template metadata fallback (description, params) |
+| `templates/<name>/` | Hook scripts for a template owned by this machine |
+| `projects/<name>/` | Project-specific hook overrides owned by this machine |
+| `cache/<machine>.json` | **Read-only** — a cached snapshot of a known remote machine's own projects/templates, populated by `colette config sync`. Never authoritative; regenerated wholesale on every sync. |
 
 ---
 
@@ -51,6 +56,15 @@ All state is stored under `~/.config/colette/`:
 A **machine** is a target environment — either the local host or a remote host
 accessed via SSH. Every project belongs to a machine.
 
+Each machine is authoritative for its own projects and templates only. A
+remote machine's data is never centrally owned by whichever machine you run
+`colette` from — the controller only keeps a clearly-marked, read-only
+**cache** of what a configured remote last reported about itself, refreshed
+via [`colette config sync`](#colette-config-sync-machine). If a lookup by
+name misses both your local projects and every remote's cache, colette
+automatically falls back to a live SSH check before giving up — see that
+section for details.
+
 ### Templates
 
 A **template** is a directory or git repository used as the starting point when
@@ -59,7 +73,7 @@ lifecycle events.
 
 Template names and project names share a **global namespace** — a name cannot be
 used for both a template and a project at the same time. This allows project
-commands (`colette code`, `colette attach`, etc.) to accept a template name and
+commands (`colette ide`, `colette attach`, etc.) to accept a template name and
 work on the template's source directory directly.
 
 ### Projects
@@ -101,7 +115,7 @@ Without an action, prints a summary of the current configuration.
 | `remove-machine <machine>` | Remove a machine |
 | `set-default <machine>` | Set the default machine |
 | `rename-template <machine> <old> <new>` | Rename a template on a machine |
-| `sync-remote [machine]` | Manually sync the colette binary to remote machine(s) |
+| `sync [machine]` | Sync the colette binary and pull a read-only project/template cache from remote machine(s) |
 
 #### `colette config list`
 
@@ -131,7 +145,15 @@ colette config add-machine
 
 #### `colette config edit-machine <machine>`
 
-Interactively edit an existing machine's settings.
+Interactively edit an existing machine's settings, including its
+`agent_command` and `ide_command` (see [`colette agent`](#colette-agent--open-in-your-configured-agent)
+and [`colette ide`](#colette-ide--open-in-your-configured-ide)). Both are
+free text with no validation. `ide_command` may use `{host}`/`{path}`
+placeholders — if no `{path}` placeholder is present, the project path is
+appended as a trailing argument. Leave either prompt empty to keep the
+current value (or the built-in default: `copilot --resume` for
+`agent_command`; `code` locally / `code --folder-uri
+vscode-remote://ssh-remote+{host}{path}` remotely for `ide_command`).
 
 ```bash
 colette config edit-machine my-server
@@ -214,18 +236,31 @@ that referenced the old template name.
 colette config rename-template local old-name new-name
 ```
 
-#### `colette config sync-remote [machine]`
+#### `colette config sync [machine]`
 
-Manually sync the local colette binary (and config snapshot) to one or all remote
-machines. Requires `colette_path` to be set on the machine (set it via
-`colette config edit-machine`).
+Sync one or all remote machines: first copies the local colette binary to the
+path configured in `colette_path` if it's out of date (requires `colette_path`
+to be set — see `colette config edit-machine`), then **pulls** that machine's
+own project/template data over SSH (running a hidden `colette debug
+self-report` on the remote) and caches it locally in
+`~/.config/colette/cache/<machine>.json`.
 
 ```bash
-colette config sync-remote            # all remote machines
-colette config sync-remote my-server  # one machine
+colette config sync            # all remote machines
+colette config sync my-server  # one machine
 ```
 
-This sync also happens automatically on every command that SSHs to a remote machine.
+This is a one-way **pull** — colette never pushes your local projects or
+templates to a remote machine's registry. Projects/templates created on a
+remote (directly there, or via `colette create -m my-server`/`colette config
+add-template my-server ...` from the controller) live only in that machine's
+own `~/.config/colette/` state; `sync` just refreshes the controller's
+read-only view of it. Commands like `colette list` show cached remote
+projects alongside local ones; a single-name lookup (e.g. `colette ide
+<name>`) that isn't found locally or in any cache automatically falls back to
+a live SSH check against configured remote machines before failing, so a
+stale cache never blocks you — it just makes that one lookup slower until the
+cache is refreshed.
 
 #### `colette config remove-template <machine> <template>`
 
@@ -323,7 +358,10 @@ colette delete my-project
 colette list
 ```
 
-List all registered projects grouped by machine.
+List all registered projects grouped by machine: this machine's own
+projects plus, for each known remote machine, whatever `colette config
+sync` last cached for it. Cached rows are marked as such (with how long ago
+they were synced) since they aren't owned by this machine and may be stale.
 
 ---
 
@@ -337,8 +375,8 @@ cd ~/projects/my-project
 colette attach      # same as: colette attach my-project
 colette start       # same as: colette start my-project
 colette stop        # same as: colette stop my-project
-colette code        # same as: colette code my-project
-colette copilot     # same as: colette copilot my-project
+colette ide         # same as: colette ide my-project
+colette agent       # same as: colette agent my-project
 colette delete      # same as: colette delete my-project
 colette unlink      # same as: colette unlink my-project
 colette monitor     # same as: colette monitor my-project
@@ -348,7 +386,7 @@ colette logs        # same as: colette logs my-project
 
 If the current directory is not a registered project path, batch commands (`start`,
 `stop`, `monitor`, `update`) fall back to acting on all projects; single-name commands
-(`attach`, `code`, `copilot`, `delete`, `unlink`) print their usage instead.
+(`attach`, `ide`, `agent`, `delete`, `unlink`) print their usage instead.
 
 ---
 
@@ -441,7 +479,7 @@ colette tui
 ### `colette monitor` — watch multiple sessions
 
 ```
-colette monitor [-m <machine>] [--copilot | --all] [<projects>...]
+colette monitor [-m <machine>] [--agent | --all] [<projects>...]
 ```
 
 Open a tmux window with read-only panes attached to each project session.
@@ -451,17 +489,17 @@ are skipped.
 | Flag | Behaviour |
 |------|-----------|
 | *(none)* | Standard `<project>` sessions |
-| `--copilot` | `<project>-copilot` sessions (local machines only) |
-| `--all` | All active sessions (standard + copilot + logs) with **one row per project** |
+| `--agent` | `<project>-agent` sessions (local machines only) |
+| `--all` | All active sessions (standard + agent + logs) with **one row per project** |
 
 With `--all`, each project occupies a horizontal band in the monitor window.
-Sessions for the same project (standard, copilot, logs) appear as side-by-side
+Sessions for the same project (standard, agent, logs) appear as side-by-side
 panes within that band.
 
 ```bash
 colette monitor
 colette monitor -m local project-a project-b
-colette monitor --copilot
+colette monitor --agent
 colette monitor --all
 ```
 
@@ -508,41 +546,48 @@ colette logs -m my-server
 
 ---
 
-### `colette code` — open in VS Code
+### `colette ide` — open in your configured IDE
 
 ```
-colette code <name>
+colette ide <name>
 ```
 
-Open the project in VS Code. Uses the Remote SSH extension for remote machines.
-Also works with a **template name** — opens the template's source directory.
+Open the project in the IDE configured for its machine (`ide_command`,
+default `code` — see [`colette config edit-machine`](#colette-config-edit-machine-machine)).
+The command always runs **locally** on the machine you invoke `colette` from;
+for a remote project, the configured `ide_command` is responsible for
+targeting the remote itself (e.g. VS Code's `--folder-uri
+vscode-remote://ssh-remote+...`, which is the default for SSH machines, or a
+`zed ssh://...` invocation). Also works with a **template name** — opens the
+template's source directory.
 
 ```bash
-colette code my-project
-colette code my-template   # opens the template's source directory
+colette ide my-project
+colette ide my-template   # opens the template's source directory
 ```
 
 ---
 
-### `colette copilot` — open in GitHub Copilot
+### `colette agent` — open in your configured agent
 
 ```
-colette copilot <name>
+colette agent <name>
 ```
 
-Open the project in GitHub Copilot inside a dedicated tmux session named
-`<project>-copilot`. Works for both local and remote machines (the `copilot`
-CLI must be installed on the remote machine).
+Open the project in the agent configured for its machine (`agent_command`,
+default `copilot --resume`) inside a dedicated tmux session named
+`<project>-agent`. Works for both local and remote machines (the configured
+command must be installed on the target machine).
 
 **Behaviour:**
-- If the `<project>-copilot` tmux session is already running, colette switches
-  to it (no new Copilot instance is launched).
-- Otherwise, a numbered picker lists known previous Copilot sessions for the
-  project (read from `.github/copilot-sessions`). You can resume any closed
-  session or start a new one. New session IDs are recorded automatically.
+- If the `<project>-agent` tmux session is already running, colette switches
+  to it (no new agent instance is launched).
+- Otherwise, a new session is started running the configured `agent_command`
+  verbatim (e.g. `copilot --resume` resumes Copilot's own last session by
+  default; a different `agent_command` behaves however that tool does).
 
 ```bash
-colette copilot my-project
+colette agent my-project
 ```
 
 ---

@@ -19,10 +19,10 @@ class TestCmdStart:
         assert "No projects" in capsys.readouterr().out
 
     def test_starts_session_for_project(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_start
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj", path="/tmp")])
+        save_local_projects([make_project("proj", path="/tmp")])
         args = MagicMock(machine=None, projects=[])
         with (
             patch("colette_cli.session.commands.ensure_session", return_value=True) as mock_ensure,
@@ -33,7 +33,7 @@ class TestCmdStart:
 
     def test_onstart_hook_runs_on_start(self, tmp_config, tmp_path):
         """The onstart hook actually executes when cmd_start is called."""
-        from colette_cli.utils.config import save_config, save_projects, write_machine_template_hook
+        from colette_cli.utils.config import save_config, save_local_projects, write_machine_template_hook
         from colette_cli.session.commands import cmd_start
         marker = tmp_path / "marker.txt"
         write_machine_template_hook("local", "tmpl", "onstart", f"#!/usr/bin/env bash\necho onstart > {marker}")
@@ -41,7 +41,7 @@ class TestCmdStart:
             "machines": {"local": make_local_machine(str(tmp_path))},
             "default_machine": "local",
         })
-        save_projects([make_project("proj", path=str(tmp_path), template="tmpl")])
+        save_local_projects([make_project("proj", path=str(tmp_path), template="tmpl")])
         args = MagicMock(machine=None, projects=[])
         with patch("colette_cli.session.commands.ensure_session", return_value=True):
             cmd_start(args)
@@ -49,10 +49,10 @@ class TestCmdStart:
         assert marker.read_text().strip() == "onstart"
 
     def test_filters_by_machine(self, tmp_config, capsys):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_start
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj", path="/tmp")])
+        save_local_projects([make_project("proj", path="/tmp")])
         args = MagicMock(machine="nonexistent", projects=[])
         with pytest.raises(SystemExit):
             cmd_start(args)
@@ -65,28 +65,28 @@ class TestCmdStop:
         assert "No projects" in capsys.readouterr().out
 
     def test_stops_local_session(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_stop
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj", path="/tmp")])
+        save_local_projects([make_project("proj", path="/tmp")])
         args = MagicMock(machine=None, projects=[])
         with (
             patch("colette_cli.session.commands.run_template_hook", return_value=True),
             patch("subprocess.run") as mock_run,
         ):
             cmd_stop(args)
-        # Kills standard, copilot and logs sessions
+        # Kills standard, agent and logs sessions
         killed = [c[0][0][3] for c in mock_run.call_args_list]
         assert "proj" in killed
-        assert "proj-copilot" in killed
+        assert "proj-agent" in killed
         assert "proj-logs" in killed
 
     def test_stop_tmux_call_uses_capture_output(self, tmp_config):
         """tmux kill-session must use capture_output=True to avoid tty pollution."""
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_stop
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj", path="/tmp")])
+        save_local_projects([make_project("proj", path="/tmp")])
         args = MagicMock(machine=None, projects=[])
         with (
             patch("colette_cli.session.commands.run_template_hook", return_value=True),
@@ -98,7 +98,7 @@ class TestCmdStop:
 
     def test_onstop_hook_runs_on_stop(self, tmp_config, tmp_path):
         """The onstop hook actually executes when cmd_stop is called."""
-        from colette_cli.utils.config import save_config, save_projects, write_machine_template_hook
+        from colette_cli.utils.config import save_config, save_local_projects, write_machine_template_hook
         from colette_cli.session.commands import cmd_stop
         marker = tmp_path / "marker.txt"
         write_machine_template_hook("local", "tmpl", "onstop", f"#!/usr/bin/env bash\necho onstop > {marker}")
@@ -106,7 +106,7 @@ class TestCmdStop:
             "machines": {"local": make_local_machine(str(tmp_path))},
             "default_machine": "local",
         })
-        save_projects([make_project("proj", path=str(tmp_path), template="tmpl")])
+        save_local_projects([make_project("proj", path=str(tmp_path), template="tmpl")])
         args = MagicMock(machine=None, projects=[])
         # subprocess.run is called for tmux kill-session (fails silently, capture_output=True)
         # and for the hook itself — only mock the tmux call so the hook runs for real.
@@ -132,18 +132,18 @@ class TestCmdStop:
 
 class TestCmdMonitor:
     def _std_args(self):
-        """Return a MagicMock args for standard monitor mode (no --copilot/--all)."""
+        """Return a MagicMock args for standard monitor mode (no --agent/--all)."""
         args = MagicMock(machine=None, projects=[])
-        args.copilot = False
+        args.agent = False
         args.all = False
         return args
 
     def test_monitor_only_shows_active_sessions(self, tmp_config):
         """Only projects with an active tmux session appear in the monitor window."""
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_monitor
         save_config(LOCAL_CFG)
-        save_projects([
+        save_local_projects([
             make_project("active-proj", path="/tmp/active"),
             make_project("idle-proj", path="/tmp/idle"),
         ])
@@ -161,10 +161,10 @@ class TestCmdMonitor:
 
     def test_monitor_does_not_create_new_sessions(self, tmp_config):
         """Monitor must NOT start new tmux sessions for idle projects."""
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_monitor
         save_config(LOCAL_CFG)
-        save_projects([make_project("idle-proj", path="/tmp/idle")])
+        save_local_projects([make_project("idle-proj", path="/tmp/idle")])
         args = self._std_args()
 
         with patch("colette_cli.session.commands.get_sessions", return_value=set()), \
@@ -181,10 +181,10 @@ class TestCmdMonitor:
 
     def test_monitor_exits_when_no_active_sessions(self, tmp_config):
         """cmd_monitor exits with an error when no sessions are active."""
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_monitor
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         args = self._std_args()
 
         with patch("colette_cli.session.commands.get_sessions", return_value=set()), \
@@ -194,10 +194,10 @@ class TestCmdMonitor:
 
     def test_monitor_blocked_from_monitor_session(self, tmp_config):
         """cmd_monitor exits when run from within the colette-monitor session."""
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_monitor
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         args = self._std_args()
 
         with patch("colette_cli.session.commands._get_current_tmux_session", return_value="colette-monitor"):
@@ -206,10 +206,10 @@ class TestCmdMonitor:
 
     def test_monitor_blocked_from_project_session(self, tmp_config):
         """cmd_monitor exits when run from within a registered colette project session."""
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_monitor
         save_config(LOCAL_CFG)
-        save_projects([make_project("my-proj", path="/tmp/my-proj")])
+        save_local_projects([make_project("my-proj", path="/tmp/my-proj")])
         args = self._std_args()
 
         with patch("colette_cli.session.commands._get_current_tmux_session", return_value="my-proj"):
@@ -218,10 +218,10 @@ class TestCmdMonitor:
 
     def test_monitor_allowed_outside_tmux(self, tmp_config):
         """cmd_monitor proceeds normally when not inside a tmux session."""
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_monitor
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj", path="/tmp/proj")])
+        save_local_projects([make_project("proj", path="/tmp/proj")])
         args = self._std_args()
 
         with patch("colette_cli.session.commands._get_current_tmux_session", return_value=None), \
@@ -233,10 +233,10 @@ class TestCmdMonitor:
 
     def test_monitor_allowed_from_unrelated_tmux_session(self, tmp_config):
         """cmd_monitor proceeds normally when run from an unrelated tmux session."""
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_monitor
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj", path="/tmp/proj")])
+        save_local_projects([make_project("proj", path="/tmp/proj")])
         args = self._std_args()
 
         with patch("colette_cli.session.commands._get_current_tmux_session", return_value="unrelated-session"), \
@@ -246,22 +246,22 @@ class TestCmdMonitor:
 
         mock_panes.assert_called_once()
 
-    def test_monitor_copilot_shows_copilot_sessions(self, tmp_config):
-        """--copilot flag shows <project>-copilot sessions, not standard ones."""
-        from colette_cli.utils.config import save_config, save_projects
+    def test_monitor_agent_shows_agent_sessions(self, tmp_config):
+        """--agent flag shows <project>-agent sessions, not standard ones."""
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_monitor
         save_config(LOCAL_CFG)
-        save_projects([
+        save_local_projects([
             make_project("proj-a", path="/tmp/a"),
             make_project("proj-b", path="/tmp/b"),
         ])
         args = MagicMock(machine=None, projects=[])
-        args.copilot = True
+        args.agent = True
         args.all = False
 
-        # proj-a has a copilot session, proj-b does not
+        # proj-a has an agent session, proj-b does not
         with patch("colette_cli.session.commands._get_current_tmux_session", return_value=None), \
-             patch("colette_cli.session.commands.get_sessions", return_value={"proj-a-copilot"}), \
+             patch("colette_cli.session.commands.get_sessions", return_value={"proj-a-agent"}), \
              patch("colette_cli.session.commands.create_tmux_window_with_panes") as mock_panes:
             cmd_monitor(args)
 
@@ -270,14 +270,14 @@ class TestCmdMonitor:
         assert "proj-a" in active_names
         assert "proj-b" not in active_names
 
-    def test_monitor_copilot_exits_when_no_copilot_sessions(self, tmp_config):
-        """--copilot exits when no copilot sessions are active."""
-        from colette_cli.utils.config import save_config, save_projects
+    def test_monitor_agent_exits_when_no_agent_sessions(self, tmp_config):
+        """--agent exits when no agent sessions are active."""
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_monitor
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj", path="/tmp/proj")])
+        save_local_projects([make_project("proj", path="/tmp/proj")])
         args = MagicMock(machine=None, projects=[])
-        args.copilot = True
+        args.agent = True
         args.all = False
 
         with patch("colette_cli.session.commands._get_current_tmux_session", return_value=None), \
@@ -287,19 +287,19 @@ class TestCmdMonitor:
                 cmd_monitor(args)
 
     def test_monitor_all_groups_sessions_by_project(self, tmp_config):
-        """--all groups standard + copilot + logs sessions per project as rows."""
-        from colette_cli.utils.config import save_config, save_projects
+        """--all groups standard + agent + logs sessions per project as rows."""
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_monitor
         save_config(LOCAL_CFG)
-        save_projects([
+        save_local_projects([
             make_project("proj-a", path="/tmp/a"),
             make_project("proj-b", path="/tmp/b"),
         ])
         args = MagicMock(machine=None, projects=[])
-        args.copilot = False
+        args.agent = False
         args.all = True
 
-        active_sessions = {"proj-a", "proj-a-copilot", "proj-a-logs", "proj-b"}
+        active_sessions = {"proj-a", "proj-a-agent", "proj-a-logs", "proj-b"}
 
         with patch("colette_cli.session.commands._get_current_tmux_session", return_value=None), \
              patch("colette_cli.session.commands.get_sessions", return_value=active_sessions), \
@@ -312,23 +312,23 @@ class TestCmdMonitor:
 
         assert "proj-a" in row_map
         assert "proj-b" in row_map
-        # proj-a has 3 sessions (standard, copilot, logs)
+        # proj-a has 3 sessions (standard, agent, logs)
         assert len(row_map["proj-a"]) == 3
         labels_a = [lbl for lbl, _ in row_map["proj-a"]]
         assert "standard" in labels_a
-        assert "copilot" in labels_a
+        assert "agent" in labels_a
         assert "logs" in labels_a
         # proj-b has only 1 session (standard)
         assert len(row_map["proj-b"]) == 1
 
     def test_monitor_all_exits_when_no_sessions(self, tmp_config):
         """--all exits when no sessions of any kind are active."""
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_monitor
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         args = MagicMock(machine=None, projects=[])
-        args.copilot = False
+        args.agent = False
         args.all = True
 
         with patch("colette_cli.session.commands._get_current_tmux_session", return_value=None), \
@@ -349,10 +349,10 @@ class TestCmdUpdate:
         assert "No projects" in capsys.readouterr().out
 
     def test_calls_onupdate_hook(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_update
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj", path="/tmp")])
+        save_local_projects([make_project("proj", path="/tmp")])
         args = MagicMock(machine=None, projects=[])
         with patch("colette_cli.session.commands.run_template_hook", return_value=True) as mock_hook:
             cmd_update(args)
@@ -361,7 +361,7 @@ class TestCmdUpdate:
 
     def test_onupdate_hook_actually_runs(self, tmp_config, tmp_path):
         """The onupdate hook executes when cmd_update is called."""
-        from colette_cli.utils.config import save_config, save_projects, write_machine_template_hook
+        from colette_cli.utils.config import save_config, save_local_projects, write_machine_template_hook
         from colette_cli.session.commands import cmd_update
         marker = tmp_path / "marker.txt"
         write_machine_template_hook("local", "tmpl", "onupdate", f"#!/usr/bin/env bash\necho onupdate > {marker}")
@@ -369,17 +369,17 @@ class TestCmdUpdate:
             "machines": {"local": make_local_machine(str(tmp_path))},
             "default_machine": "local",
         })
-        save_projects([make_project("proj", path=str(tmp_path), template="tmpl")])
+        save_local_projects([make_project("proj", path=str(tmp_path), template="tmpl")])
         args = MagicMock(machine=None, projects=[])
         cmd_update(args)
         assert marker.exists(), "onupdate hook did not run"
         assert marker.read_text().strip() == "onupdate"
 
     def test_filters_by_machine(self, tmp_config, capsys):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.session.commands import cmd_update
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj", path="/tmp")])
+        save_local_projects([make_project("proj", path="/tmp")])
         args = MagicMock(machine="nonexistent", projects=[])
         with pytest.raises(SystemExit):
             cmd_update(args)
@@ -389,12 +389,12 @@ class TestCmdUpdateCwdDetection:
     """Tests for CWD-based project detection in 'colette update' via main()."""
 
     def _setup(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         project_path = tmp_path / "myproject"
         project_path.mkdir()
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([make_project("myproject", path=str(project_path))])
+        save_local_projects([make_project("myproject", path=str(project_path))])
         return project_path
 
     def test_main_targets_cwd_project_when_no_args(self, tmp_config, tmp_path):
@@ -438,14 +438,14 @@ class TestCmdUpdateCwdDetection:
     def test_main_explicit_project_name_bypasses_cwd(self, tmp_config, tmp_path):
         """main() respects explicit project names even when cwd is a different project."""
         import os, sys
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         project_a = tmp_path / "proj-a"
         project_a.mkdir()
         project_b = tmp_path / "proj-b"
         project_b.mkdir()
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([
+        save_local_projects([
             make_project("proj-a", path=str(project_a)),
             make_project("proj-b", path=str(project_b)),
         ])
@@ -469,12 +469,12 @@ class TestCwdDetectStart:
     """Tests for CWD-based project detection in 'colette start' via main()."""
 
     def _setup(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         project_path = tmp_path / "myproject"
         project_path.mkdir()
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([make_project("myproject", path=str(project_path))])
+        save_local_projects([make_project("myproject", path=str(project_path))])
         return project_path
 
     def test_main_targets_cwd_project_when_no_args(self, tmp_config, tmp_path):
@@ -516,14 +516,14 @@ class TestCwdDetectStart:
     def test_main_explicit_project_bypasses_cwd(self, tmp_config, tmp_path):
         """main() respects explicit project names even when cwd is a different project."""
         import os, sys
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         proj_a = tmp_path / "proj-a"
         proj_a.mkdir()
         proj_b = tmp_path / "proj-b"
         proj_b.mkdir()
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([
+        save_local_projects([
             make_project("proj-a", path=str(proj_a)),
             make_project("proj-b", path=str(proj_b)),
         ])
@@ -545,12 +545,12 @@ class TestCwdDetectStop:
     """Tests for CWD-based project detection in 'colette stop' via main()."""
 
     def _setup(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         project_path = tmp_path / "myproject"
         project_path.mkdir()
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([make_project("myproject", path=str(project_path))])
+        save_local_projects([make_project("myproject", path=str(project_path))])
         return project_path
 
     def test_main_targets_cwd_project_when_no_args(self, tmp_config, tmp_path):
@@ -592,14 +592,14 @@ class TestCwdDetectStop:
     def test_main_explicit_project_bypasses_cwd(self, tmp_config, tmp_path):
         """main() respects explicit project names even when cwd is a different project."""
         import os, sys
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         proj_a = tmp_path / "proj-a"
         proj_a.mkdir()
         proj_b = tmp_path / "proj-b"
         proj_b.mkdir()
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([
+        save_local_projects([
             make_project("proj-a", path=str(proj_a)),
             make_project("proj-b", path=str(proj_b)),
         ])
@@ -621,12 +621,12 @@ class TestCwdDetectMonitor:
     """Tests for CWD-based project detection in 'colette monitor' via main()."""
 
     def _setup(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         project_path = tmp_path / "myproject"
         project_path.mkdir()
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([make_project("myproject", path=str(project_path))])
+        save_local_projects([make_project("myproject", path=str(project_path))])
         return project_path
 
     def test_main_targets_cwd_project_when_no_args(self, tmp_config, tmp_path):
@@ -668,14 +668,14 @@ class TestCwdDetectMonitor:
     def test_main_explicit_project_bypasses_cwd(self, tmp_config, tmp_path):
         """main() respects explicit project names even when cwd is a different project."""
         import os, sys
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         proj_a = tmp_path / "proj-a"
         proj_a.mkdir()
         proj_b = tmp_path / "proj-b"
         proj_b.mkdir()
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([
+        save_local_projects([
             make_project("proj-a", path=str(proj_a)),
             make_project("proj-b", path=str(proj_b)),
         ])
@@ -697,12 +697,12 @@ class TestCwdDetectLogs:
     """Tests for CWD-based project detection in 'colette logs' via main()."""
 
     def _setup(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         project_path = tmp_path / "myproject"
         project_path.mkdir()
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([make_project("myproject", path=str(project_path))])
+        save_local_projects([make_project("myproject", path=str(project_path))])
         return project_path
 
     def test_main_targets_cwd_project_when_no_args(self, tmp_config, tmp_path):
@@ -744,14 +744,14 @@ class TestCwdDetectLogs:
     def test_main_explicit_name_bypasses_cwd(self, tmp_config, tmp_path):
         """main() respects explicit name even when cwd is a different project."""
         import os, sys
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         proj_a = tmp_path / "proj-a"
         proj_a.mkdir()
         proj_b = tmp_path / "proj-b"
         proj_b.mkdir()
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([
+        save_local_projects([
             make_project("proj-a", path=str(proj_a)),
             make_project("proj-b", path=str(proj_b)),
         ])

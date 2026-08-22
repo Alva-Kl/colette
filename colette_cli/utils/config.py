@@ -12,6 +12,9 @@ TEMPLATE_SCRIPTS_DIR = CONFIG_DIR / "templates"
 PROJECT_HOOKS_DIR = CONFIG_DIR / "projects"
 MACHINE_SCRIPTS_DIR = CONFIG_DIR / "machines"
 HOOK_FAILURES_FILE = CONFIG_DIR / "hook-failures.json"
+# Read-only cache of remote machines' own project/template data, populated by
+# `colette config sync` — never hand-edited, always overwritten wholesale.
+CACHE_DIR = CONFIG_DIR / "cache"
 _MAX_HOOK_FAILURES = 200
 TEMPLATE_HOOK_FILENAMES = {
     "oncreate": ".oncreate",
@@ -22,6 +25,15 @@ TEMPLATE_HOOK_FILENAMES = {
     "ondelete": ".ondelete",
     "coletterc": ".coletterc",
 }
+
+# Default command used to open a project's dedicated agent tmux session when
+# the machine has no 'agent_command' configured.
+DEFAULT_AGENT_COMMAND = "copilot --resume"
+
+# Default ide_command templates used when a machine has no 'ide_command'
+# configured. Both reproduce colette's historical hardcoded VS Code behavior.
+DEFAULT_IDE_COMMAND_LOCAL = "code"
+DEFAULT_IDE_COMMAND_REMOTE = "code --folder-uri vscode-remote://ssh-remote+{host}{path}"
 
 _HOOK_VAR_DOCS = """\
 # Available Colette environment variables:
@@ -55,17 +67,72 @@ def save_config(cfg):
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2) + "\n")
 
 
-def load_projects():
-    """Load list of all projects."""
+def load_local_projects():
+    """Load this machine's own projects (never includes remote-cached data)."""
     if not PROJECTS_FILE.exists():
         return []
     return json.loads(PROJECTS_FILE.read_text())
 
 
-def save_projects(projects):
-    """Save list of all projects."""
+def save_local_projects(projects):
+    """Save this machine's own projects."""
     ensure_config_dir()
     PROJECTS_FILE.write_text(json.dumps(projects, indent=2) + "\n")
+
+
+def get_machine_cache_path(machine_name):
+    """Return the path of a remote machine's read-only project/template cache file."""
+    return CACHE_DIR / f"{machine_name}.json"
+
+
+def load_machine_cache(machine_name):
+    """Load the read-only cached snapshot of a remote machine's own projects/templates.
+
+    Returns None if no cache exists yet (sync has never run for this machine,
+    or the cache file is malformed).
+    """
+    path = get_machine_cache_path(machine_name)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+
+
+def save_machine_cache(machine_name, data):
+    """Write a remote machine's read-only cache. Always overwritten wholesale by sync."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    get_machine_cache_path(machine_name).write_text(json.dumps(data, indent=2) + "\n")
+
+
+def load_projects():
+    """Return the merged read view: this machine's own projects plus every
+    configured remote machine's cached projects (each tagged `_cached: True`
+    and remapped to use the controller's own connection name for that
+    machine). With no remotes configured or no cache yet present, this is
+    exactly `load_local_projects()`.
+
+    This is what nearly every listing/batch command should use — it is the
+    closest thing to "all known projects" without this machine owning any of
+    the remote data. Single-name lookups needing guaranteed-fresh data should
+    use `get_project()` instead, which falls back to a live SSH check.
+    """
+    projects = list(load_local_projects())
+    cfg = load_config()
+    for machine_name, machine in cfg.get("machines", {}).items():
+        if machine.get("type") != "ssh":
+            continue
+        cache = load_machine_cache(machine_name)
+        if not cache:
+            continue
+        for p in cache.get("projects", []):
+            cached = dict(p)
+            cached["machine"] = machine_name
+            cached["_cached"] = True
+            cached["_synced_at"] = cache.get("synced_at")
+            projects.append(cached)
+    return projects
 
 
 def load_templates():
@@ -82,8 +149,48 @@ def save_templates(templates):
 
 
 def get_project(name):
-    """Get a project by name, return None if not found."""
-    return next((p for p in load_projects() if p["name"] == name), None)
+    """Get a project by name from the merged local+cache view, or None.
+
+    If not found there, falls back to a live SSH check against each
+    configured remote machine (not cached data) — this keeps single-name
+    lookups correct even when the local cache is stale (e.g. a project was
+    just created directly on the remote, or was renamed/deleted there since
+    the last sync). Each machine checked this way has its cache
+    opportunistically refreshed. Batch/listing commands should call
+    load_projects() directly instead, to avoid this per-lookup SSH cost.
+    """
+    found = next((p for p in load_projects() if p["name"] == name), None)
+    if found is not None:
+        return found
+
+    from datetime import datetime, timezone
+
+    from colette_cli.utils.ssh import fetch_self_report
+
+    cfg = load_config()
+    for machine_name, machine in cfg.get("machines", {}).items():
+        if machine.get("type") != "ssh" or not machine.get("colette_path"):
+            continue
+        report = fetch_self_report(machine, machine_name)
+        if report is None:
+            continue
+        remote_projects = report.get("projects", [])
+        cache_data = {
+            "machine": machine_name,
+            "synced_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "projects_dir": report.get("machine", {}).get("projects_dir", ""),
+            "templates": report.get("machine", {}).get("templates", []),
+            "projects": remote_projects,
+        }
+        save_machine_cache(machine_name, cache_data)
+        match = next((p for p in remote_projects if p["name"] == name), None)
+        if match is not None:
+            result = dict(match)
+            result["machine"] = machine_name
+            result["_cached"] = True
+            result["_synced_at"] = cache_data["synced_at"]
+            return result
+    return None
 
 
 def get_machine(cfg, machine_name):

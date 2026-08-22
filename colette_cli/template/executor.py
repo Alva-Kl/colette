@@ -98,31 +98,67 @@ def _handle_hook_failure(result, hook_name, project_name, template_name, fail_on
     return False
 
 
-def _super_assignment(super_path, is_remote: bool = False) -> str:
-    """Return a bash assignment statement for the SUPER variable.
-
-    Local: ``SUPER=/absolute/local/path``
-    Remote: inlines the file content via a base64-encoded tempfile so the path
-    exists on the remote machine.
+class _FetchedContent(str):
+    """Marks a string as already-fetched hook content (e.g. from
+    ssh_read_hook_files), as opposed to a path string — see _super_assignment.
     """
-    if not is_remote:
-        return f"SUPER={shlex.quote(str(super_path))}"
-    content = Path(super_path).read_text()
+
+
+def _super_assignment_from_content(content: str) -> str:
+    """Return a bash SUPER assignment that inlines *content* directly (no disk read)."""
     b64 = base64.b64encode(content.encode()).decode()
     return f"SUPER=$(mktemp) && printf '%s' {shlex.quote(b64)} | base64 -d > \"$SUPER\""
 
 
-def _resolve_hook_with_super(project_name, template_name, hook_name, machine_name=None):
-    """Resolve a hook for a project, returning (content, super_path).
+def _super_assignment(super_source, is_remote: bool = False) -> str:
+    """Return a bash assignment statement for the SUPER variable.
 
-    Resolution order:
+    *super_source* is either a path (Path or str) to a local hook file, or a
+    _FetchedContent instance carrying already-fetched hook content (e.g. from
+    ssh_read_hook_files) — content is always inlined via a base64 tempfile
+    regardless of *is_remote*, since there's no local path to reference either way.
+
+    Local (path, not is_remote): ``SUPER=/absolute/local/path``
+    Local (path, is_remote): inlines the local file's content via a
+    base64-encoded tempfile so the path exists on the remote machine.
+    """
+    if isinstance(super_source, _FetchedContent):
+        return _super_assignment_from_content(str(super_source))
+    if not is_remote:
+        return f"SUPER={shlex.quote(str(super_source))}"
+    return _super_assignment_from_content(Path(super_source).read_text())
+
+
+def _resolve_hook_with_super(project_name, template_name, hook_name, machine_name=None, remote_hooks=None):
+    """Resolve a hook for a project, returning (content, super_source).
+
+    Local resolution order (used when *remote_hooks* is None):
       1. Project-specific hook
       2. Machine-template hook (machine_name + template override)
       3. Shared template hook
+    Each level can call `source $SUPER` to delegate to the next; super_source
+    is a Path in this mode.
 
-    Each level can call `source $SUPER` to delegate to the next.
+    When *remote_hooks* is provided (a dict from ssh_read_hook_files), this
+    resolves against that pre-fetched remote snapshot instead of local disk,
+    collapsing to two tiers: project hook, then template hook — both are
+    already fully resolved/flattened remote copies (pushed by
+    push_project_hooks/push_template_hooks), so there's no separate
+    machine-scoped-override tier to consider remotely. super_source in this
+    mode is the already-fetched template hook content (a str), not a path.
+
     Returns (None, None) if no effective hook is found.
     """
+    if remote_hooks is not None:
+        entry = remote_hooks.get(hook_name, {})
+        project_hook = entry.get("project")
+        template_hook = entry.get("template")
+        if _has_effective_script(project_hook):
+            return project_hook, (_FetchedContent(template_hook) if _has_effective_script(template_hook) else None)
+        if _has_effective_script(template_hook):
+            return template_hook, None
+        return None, None
+
     machine_template_path = (
         get_machine_template_hook_path(machine_name, template_name, hook_name)
         if machine_name and template_name
@@ -132,7 +168,7 @@ def _resolve_hook_with_super(project_name, template_name, hook_name, machine_nam
         get_template_hook_path(template_name, hook_name) if template_name else None
     )
 
-    project_hook = read_project_hook(project_name, hook_name)
+    project_hook = read_project_hook(project_name, hook_name) if project_name else None
     if _has_effective_script(project_hook):
         # super for project hook: machine-template hook if effective, else shared template hook
         if machine_name and template_name and machine_template_hook_exists(machine_name, template_name, hook_name):
@@ -183,7 +219,7 @@ def _hook_environment(
     return env
 
 
-def _prepend_coletterc(project_name, template_name, command, hook_super_path=None, is_remote: bool = False):
+def _prepend_coletterc(project_name, template_name, command, hook_super_path=None, is_remote: bool = False, remote_hooks=None):
     """Prepend coletterc sourcing to a hook command.
 
     When a project-level coletterc is active, SUPER is set to the template
@@ -193,7 +229,7 @@ def _prepend_coletterc(project_name, template_name, command, hook_super_path=Non
     Returns the unmodified command if no effective coletterc is found.
     """
     coletterc, super_path = _resolve_hook_with_super(
-        project_name, template_name, "coletterc"
+        project_name, template_name, "coletterc", remote_hooks=remote_hooks
     )
     if not coletterc:
         return command
@@ -206,19 +242,26 @@ def _prepend_coletterc(project_name, template_name, command, hook_super_path=Non
     return "\n".join(prefix_lines) + "\n" + command
 
 
-def build_project_bootstrap(project, machine_name, template_metadata, is_remote: bool = False):
+def build_project_bootstrap(project, machine_name, template_metadata, is_remote: bool = False, machine=None):
     """Build the shell bootstrap command for a project tmux session.
 
     Uses `bash --rcfile` to source ~/.bashrc first, then coletterc, so that
     venv activations in coletterc persist after the shell's rc file runs.
     When a project-level coletterc is active, SUPER is set to the template
     coletterc path so it can call `source $SUPER` for inheritance.
-    When *is_remote* is True, the template hook file is inlined as a base64
-    tempfile so the remote machine doesn't need it at the local path.
+    When *is_remote* is True, coletterc content is fetched fresh from the
+    remote machine's own config over SSH (via *machine*) and inlined as a
+    base64 tempfile, rather than read from local disk.
     """
     tmpl_name = _template_name(template_metadata)
+
+    remote_hooks = None
+    if is_remote:
+        from colette_cli.utils.ssh import ssh_read_hook_files
+        remote_hooks = ssh_read_hook_files(machine or {}, project["name"], tmpl_name)
+
     coletterc, super_path = _resolve_hook_with_super(
-        project["name"], tmpl_name, "coletterc", machine_name=machine_name
+        project["name"], tmpl_name, "coletterc", machine_name=machine_name, remote_hooks=remote_hooks
     )
     if not _has_effective_script(coletterc):
         return "exec bash"
@@ -248,13 +291,21 @@ def run_template_hook(
     """
     tmpl_name = _template_name(template_metadata)
 
+    remote_hooks = None
+    if is_remote:
+        from colette_cli.utils.ssh import ssh_read_hook_files
+        remote_hooks = ssh_read_hook_files(machine, project["name"], tmpl_name)
+
     command, super_path = _resolve_hook_with_super(
-        project["name"], tmpl_name, hook_name, machine_name=machine_name
+        project["name"], tmpl_name, hook_name, machine_name=machine_name, remote_hooks=remote_hooks
     )
     if command is None:
         return True
 
-    command = _prepend_coletterc(project["name"], tmpl_name, command, hook_super_path=super_path, is_remote=is_remote)
+    command = _prepend_coletterc(
+        project["name"], tmpl_name, command, hook_super_path=super_path,
+        is_remote=is_remote, remote_hooks=remote_hooks,
+    )
 
     machine_params = get_machine_template_params(machine, tmpl_name) if tmpl_name else {}
     env = _hook_environment(
@@ -275,18 +326,30 @@ def build_hook_command(project, machine_name, template_metadata, machine, hook_n
     coletterc is prepended to the hook command. $SUPER is set when a
     project-level hook is active. Returns None if no effective hook is defined.
     """
+    from colette_cli.utils.helpers import is_remote_machine
+    is_remote = is_remote_machine(machine)
     tmpl_name = _template_name(template_metadata)
+
+    remote_hooks = None
+    if is_remote:
+        from colette_cli.utils.ssh import ssh_read_hook_files
+        remote_hooks = ssh_read_hook_files(machine, project["name"], tmpl_name)
+
     command, super_path = _resolve_hook_with_super(
-        project["name"], tmpl_name, hook_name, machine_name=machine_name
+        project["name"], tmpl_name, hook_name, machine_name=machine_name, remote_hooks=remote_hooks
     )
     if command is None:
         return None
 
-    command = _prepend_coletterc(project["name"], tmpl_name, command, hook_super_path=super_path)
+    command = _prepend_coletterc(
+        project["name"], tmpl_name, command, hook_super_path=super_path,
+        is_remote=is_remote, remote_hooks=remote_hooks,
+    )
 
     machine_params = get_machine_template_params(machine, tmpl_name) if tmpl_name else {}
     env = _hook_environment(
-        project, machine_name, tmpl_name, machine, template_metadata, super_path,
+        project, machine_name, tmpl_name, machine, template_metadata,
+        super_path=None if is_remote else super_path,
         machine_params=machine_params,
     )
     assignments = _build_env_assignments(env, include_super=True)
@@ -353,3 +416,23 @@ def run_onupdate_for_template(
     if result.returncode == 0:
         return True
     return _handle_hook_failure(result, "onupdate", None, template_name, fail_on_error)
+
+
+def compute_effective_template_hook(template_name, hook_name, machine_name):
+    """Return the flattened, self-contained script for a template's hook on a
+    specific machine (its machine-scoped override if effective, else the
+    shared template hook), or None if neither exists.
+
+    Used by push_template_hooks (colette_cli.utils.ssh) when pushing a
+    template's hooks to a remote machine: the remote should end up with one
+    canonical, already-resolved copy per hook, not a 3-tier override chain to
+    re-resolve itself. Any `source "$SUPER"` chain from override to shared
+    hook is inlined via a base64 tempfile (same trick used for genuine remote
+    execution) so the pushed script has no dependency on a local file path.
+    """
+    content, super_source = _resolve_hook_with_super(None, template_name, hook_name, machine_name=machine_name)
+    if not _has_effective_script(content):
+        return None
+    if not super_source:
+        return content
+    return _super_assignment(super_source, is_remote=True) + "\n" + content

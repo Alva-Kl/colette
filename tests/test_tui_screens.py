@@ -18,6 +18,17 @@ LOCAL_CFG = {
 }
 
 
+class _SyncThread:
+    """Stand-in for threading.Thread that runs its target synchronously,
+    so async TUI actions (Create/Delete/Sync) can be asserted on without
+    racing a real background thread."""
+    def __init__(self, target, daemon=False):
+        self._target = target
+
+    def start(self):
+        self._target()
+
+
 def _item_labels(items):
     return [i.label for i in items]
 
@@ -118,10 +129,10 @@ class TestProjectListItems:
             assert label in labels
 
     def test_global_actions_come_after_projects(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.tui.screens import project_list_items
         save_config(LOCAL_CFG)
-        save_projects([make_project("my-proj")])
+        save_local_projects([make_project("my-proj")])
         items = project_list_items()
         labels = _item_labels(items)
         proj_idx = labels.index("my-proj")
@@ -129,10 +140,10 @@ class TestProjectListItems:
         assert proj_idx < start_idx
 
     def test_projects_listed_under_machine_title(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.tui.screens import project_list_items
         save_config(LOCAL_CFG)
-        save_projects([make_project("my-proj")])
+        save_local_projects([make_project("my-proj")])
         labels = _item_labels(project_list_items())
         assert "my-proj" in labels
 
@@ -142,9 +153,9 @@ class TestProjectListItems:
         assert "(no projects)" in labels
 
     def test_start_all_calls_cmd_start(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         with patch("colette_cli.session.cmd_start") as mock_start, \
              patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
             from colette_cli.tui.screens import project_list_items
@@ -155,9 +166,9 @@ class TestProjectListItems:
         assert mock_start.call_args[0][0].machine is None
 
     def test_per_machine_start_all_calls_cmd_start_with_machine(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         with patch("colette_cli.session.cmd_start") as mock_start, \
              patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
             from colette_cli.tui.screens import project_list_items
@@ -168,9 +179,9 @@ class TestProjectListItems:
         assert mock_start.call_args[0][0].projects == []
 
     def test_per_machine_stop_all_calls_cmd_stop_with_machine(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         with patch("colette_cli.session.cmd_stop") as mock_stop, \
              patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
             from colette_cli.tui.screens import project_list_items
@@ -181,9 +192,9 @@ class TestProjectListItems:
         assert mock_stop.call_args[0][0].projects == []
 
     def test_stop_all_calls_cmd_stop(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         with patch("colette_cli.session.cmd_stop") as mock_stop, \
              patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
             from colette_cli.tui.screens import project_list_items
@@ -193,9 +204,9 @@ class TestProjectListItems:
         assert mock_stop.call_args[0][0].projects == []
 
     def test_update_all_calls_cmd_update(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         with patch("colette_cli.session.cmd_update") as mock_update, \
              patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
             from colette_cli.tui.screens import project_list_items
@@ -206,9 +217,9 @@ class TestProjectListItems:
         assert mock_update.call_args[0][0].machine is None
 
     def test_per_machine_update_all_calls_cmd_update_with_machine(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         with patch("colette_cli.session.cmd_update") as mock_update, \
              patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
             from colette_cli.tui.screens import project_list_items
@@ -276,13 +287,13 @@ class TestProjectActionItems:
     def test_returns_all_expected_actions(self, tmp_config):
         write_config(tmp_config, LOCAL_CFG)
         labels = _item_labels(self._get_items())
-        for expected in ("Open session", "Start", "Stop", "Update", "Code", "Copilot", "Logs", "Monitor", "Edit hooks", "Delete", "Unlink"):
+        for expected in ("Open session", "Start", "Stop", "Update", "IDE", "Agent", "Logs", "Monitor", "Edit hooks", "Delete", "Unlink"):
             assert expected in labels, f"missing: {expected}"
 
     def test_action_order(self, tmp_config):
         write_config(tmp_config, LOCAL_CFG)
         labels = _item_labels(self._get_items())
-        assert labels == ["Open session", "Code", "Copilot", "Logs", "Monitor", "Start", "Stop", "Update", "Edit hooks", "Unlink", "Delete"]
+        assert labels == ["Open session", "IDE", "Agent", "Logs", "Monitor", "Start", "Stop", "Update", "Edit hooks", "Unlink", "Delete"]
 
     def test_start_calls_cmd_start_with_project_name(self, tmp_config):
         write_config(tmp_config, LOCAL_CFG)
@@ -307,11 +318,15 @@ class TestProjectActionItems:
         assert mock_stop.call_args[0][0].projects == ["my-proj"]
 
     def test_delete_calls_cmd_delete_with_project_name(self, tmp_config):
+        """Delete runs cmd_delete in a background thread (_async_popup) — run it
+        synchronously so the assertion below isn't racing a real thread."""
         write_config(tmp_config, LOCAL_CFG)
         project = make_project("my-proj")
         with patch("colette_cli.project.cmd_delete") as mock_delete, \
              patch("colette_cli.tui.forms.type_to_confirm", return_value=True), \
              patch("colette_cli.tui.forms.confirm", return_value=True), \
+             patch("threading.Thread", _SyncThread), \
+             patch("colette_cli.utils.notify.send_notification"), \
              patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
             items = self._get_items(project)
             next(i for i in items if i.label == "Delete").run()
@@ -319,20 +334,20 @@ class TestProjectActionItems:
         assert mock_delete.call_args[0][0].name == "my-proj"
 
     def test_unlink_removes_project_from_config(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects, load_projects
+        from colette_cli.utils.config import save_config, save_local_projects, load_projects
         write_config(tmp_config, LOCAL_CFG)
         project = make_project("my-proj")
-        save_projects([project])
+        save_local_projects([project])
         with patch("colette_cli.tui.forms.confirm", return_value=True):
             items = self._get_items(project)
             next(i for i in items if i.label == "Unlink").run()
         assert not any(p["name"] == "my-proj" for p in load_projects())
 
     def test_unlink_aborts_on_cancel(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects, load_projects
+        from colette_cli.utils.config import save_config, save_local_projects, load_projects
         write_config(tmp_config, LOCAL_CFG)
         project = make_project("my-proj")
-        save_projects([project])
+        save_local_projects([project])
         with patch("colette_cli.tui.forms.confirm", return_value=False):
             items = self._get_items(project)
             next(i for i in items if i.label == "Unlink").run()
@@ -348,26 +363,29 @@ class TestProjectActionItems:
         logs = next(i for i in self._get_items() if i.label == "Logs")
         assert logs.is_leaf
 
-    def test_open_session_does_not_inject_for_remote(self, tmp_config):
-        """Opening a session on a remote machine must NOT call inject_project_config."""
-        from colette_cli.utils.config import save_config, save_projects
+    def test_open_session_fetches_hooks_over_ssh_not_local_push(self, tmp_config):
+        """Opening a session on a remote machine fetches hook content live over
+        SSH (ssh_read_hook_files) — it must never push/write anything back."""
+        from colette_cli.utils.config import save_config, save_local_projects
         remote_cfg = {
             "machines": {"remote": {"type": "ssh", "host": "myhost"}},
             "default_machine": "remote",
         }
         save_config(remote_cfg)
         project = make_project("my-proj", machine="remote")
-        save_projects([project])
+        save_local_projects([project])
 
         items = self._get_items(project)
         open_item = next(i for i in items if i.label == "Open session")
 
-        with patch("colette_cli.utils.ssh.inject_project_config") as mock_inject, \
+        with patch("colette_cli.utils.ssh.ssh_read_hook_files", return_value={}) as mock_fetch, \
+             patch("colette_cli.utils.ssh.push_project_entry") as mock_push, \
              patch("colette_cli.utils.ssh.ssh_interactive"), \
              patch("curses.endwin"), patch("curses.doupdate"):
             open_item.run()
 
-        mock_inject.assert_not_called()
+        mock_fetch.assert_called_once()
+        mock_push.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -916,7 +934,7 @@ class TestMachineActionItems:
         assert "Sync colette" in labels
 
     def test_sync_colette_calls_sync_remote(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects, load_machine_cache
         save_config({
             "machines": {
                 "remote": {
@@ -928,12 +946,19 @@ class TestMachineActionItems:
             },
             "default_machine": "remote",
         })
-        save_projects([make_project("proj-a", machine="remote"), make_project("proj-b", machine="remote")])
+        save_local_projects([])
+        report = {
+            "machine": {"projects_dir": "/home/user", "templates": []},
+            "projects": [
+                {"name": "proj-a", "machine": "local", "path": "/home/user/proj-a", "template": None},
+                {"name": "proj-b", "machine": "local", "path": "/home/user/proj-b", "template": None},
+            ],
+        }
         from colette_cli.tui.screens import machine_action_items
         items = machine_action_items("remote")
         sync_item = next(i for i in items if i.label == "Sync colette")
         with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True) as mock_sync, \
-             patch("colette_cli.utils.ssh.inject_project_config") as mock_inject, \
+             patch("colette_cli.utils.ssh.fetch_self_report", return_value=report) as mock_report, \
              patch("colette_cli.tui.screens._async_popup", side_effect=lambda fn, lbl: fn) as mock_popup:
             sync_item.run()
         mock_popup.assert_called_once()
@@ -941,9 +966,9 @@ class TestMachineActionItems:
         call_args = mock_sync.call_args
         assert call_args[0][0]["host"] == "user@server"
         assert call_args[0][1] == "remote"
-        assert mock_inject.call_count == 2
-        injected_names = {c[0][2]["name"] for c in mock_inject.call_args_list}
-        assert injected_names == {"proj-a", "proj-b"}
+        mock_report.assert_called_once()
+        cache = load_machine_cache("remote")
+        assert {p["name"] for p in cache["projects"]} == {"proj-a", "proj-b"}
 
     def test_sync_colette_skips_local_machine(self, tmp_config):
         # "Sync colette" must not appear in local machine items at all
@@ -993,6 +1018,70 @@ class TestMachineActionItems:
              patch("colette_cli.tui.screens._async_popup", side_effect=lambda fn, lbl: fn):
             with pytest.raises(RuntimeError, match="sync failed"):
                 sync_item.run()
+
+    def test_has_set_agent_and_ide_command_actions(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        save_config(LOCAL_CFG)
+        from colette_cli.tui.screens import machine_action_items
+        labels = _item_labels(machine_action_items("local"))
+        assert "Set agent command" in labels
+        assert "Set IDE command" in labels
+
+    def test_set_agent_command_saves_to_config(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        save_config(LOCAL_CFG)
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("local")
+        set_agent = next(i for i in items if i.label == "Set agent command")
+        with patch("colette_cli.tui.forms.ask", return_value="claude --resume"):
+            set_agent.run()
+        cfg = load_config()
+        assert cfg["machines"]["local"]["agent_command"] == "claude --resume"
+
+    def test_set_agent_command_clears_on_empty(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        cfg = dict(LOCAL_CFG["machines"]["local"])
+        cfg["agent_command"] = "old --agent"
+        save_config({"machines": {"local": cfg}, "default_machine": "local"})
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("local")
+        set_agent = next(i for i in items if i.label == "Set agent command")
+        with patch("colette_cli.tui.forms.ask", return_value=""):
+            set_agent.run()
+        assert "agent_command" not in load_config()["machines"]["local"]
+
+    def test_set_agent_command_aborts_on_esc(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        save_config(LOCAL_CFG)
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("local")
+        set_agent = next(i for i in items if i.label == "Set agent command")
+        with patch("colette_cli.tui.forms.ask", return_value=None):
+            set_agent.run()
+        assert "agent_command" not in load_config()["machines"]["local"]
+
+    def test_set_ide_command_saves_to_config(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        save_config(LOCAL_CFG)
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("local")
+        set_ide = next(i for i in items if i.label == "Set IDE command")
+        with patch("colette_cli.tui.forms.ask", return_value="code-insiders"):
+            set_ide.run()
+        cfg = load_config()
+        assert cfg["machines"]["local"]["ide_command"] == "code-insiders"
+
+    def test_set_ide_command_clears_on_empty(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        cfg = dict(LOCAL_CFG["machines"]["local"])
+        cfg["ide_command"] = "old-ide"
+        save_config({"machines": {"local": cfg}, "default_machine": "local"})
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("local")
+        set_ide = next(i for i in items if i.label == "Set IDE command")
+        with patch("colette_cli.tui.forms.ask", return_value=""):
+            set_ide.run()
+        assert "ide_command" not in load_config()["machines"]["local"]
 
 
 # ---------------------------------------------------------------------------
@@ -1116,10 +1205,10 @@ class TestMachineTemplateItems:
 
 class TestConfigProjectListItems:
     def test_lists_all_projects(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.tui.screens import config_project_list_items
         save_config(LOCAL_CFG)
-        save_projects([make_project("a"), make_project("b")])
+        save_local_projects([make_project("a"), make_project("b")])
         labels = _item_labels(config_project_list_items())
         assert "a" in labels
         assert "b" in labels
@@ -1130,18 +1219,18 @@ class TestConfigProjectListItems:
         assert items[0].label == "(no projects)"
 
     def test_project_items_are_submenus(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.tui.screens import config_project_list_items
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         proj_item = next(i for i in config_project_list_items() if i.label == "proj")
         assert not proj_item.is_leaf
 
     def test_project_detail_shows_template(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.tui.screens import config_project_list_items
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj", template="my-tmpl")])
+        save_local_projects([make_project("proj", template="my-tmpl")])
         proj_item = next(i for i in config_project_list_items() if i.label == "proj")
         assert proj_item.detail == "my-tmpl"
 
@@ -1166,7 +1255,7 @@ class TestMainMenuItems:
         from colette_cli.tui.screens import main_menu_items
         monitor = next(i for i in main_menu_items() if i.label == "Monitor")
         sub_labels = _item_labels(monitor.get_children())
-        assert sub_labels == ["Standard", "Copilot", "All"]
+        assert sub_labels == ["Standard", "Agent", "All"]
 
     def test_projects_templates_config_are_submenus(self, tmp_config):
         from colette_cli.tui.screens import main_menu_items
@@ -1560,10 +1649,10 @@ class TestAddTemplateProjectNameConflict:
     }
 
     def test_add_template_aborts_if_name_is_existing_project(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects, load_config
+        from colette_cli.utils.config import save_config, save_local_projects, load_config
         from colette_cli.tui.screens import machine_template_items
         save_config(self.CFG_WITH_PROJECT)
-        save_projects([{"name": "existing-project", "machine": "local", "path": "/tmp/existing-project"}])
+        save_local_projects([{"name": "existing-project", "machine": "local", "path": "/tmp/existing-project"}])
         items = machine_template_items("local")
         with patch("colette_cli.tui.forms.ask", return_value="existing-project"), \
              patch("colette_cli.template.registry.scaffold_template_hook_files"):
@@ -1574,7 +1663,7 @@ class TestAddTemplateProjectNameConflict:
 
 class TestCreateProjectTemplateNameConflict:
     def test_create_project_aborts_if_name_is_existing_template(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.project.commands import cmd_create
         cfg = {
             "machines": {
@@ -1587,7 +1676,7 @@ class TestCreateProjectTemplateNameConflict:
             "default_machine": "local",
         }
         save_config(cfg)
-        save_projects([])
+        save_local_projects([])
         with patch("colette_cli.project.cmd_create") as mock_create, \
              patch("colette_cli.tui.forms.ask", side_effect=["my-tmpl", "local", "my-tmpl"]):
             from colette_cli.tui.screens import project_list_items

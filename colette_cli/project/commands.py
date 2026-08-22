@@ -1,5 +1,6 @@
-"""Project sub-commands: create, delete, list, attach, code, copilot."""
+"""Project sub-commands: create, delete, list, attach, ide, agent."""
 
+import os
 import shlex
 import shutil
 import subprocess
@@ -14,19 +15,22 @@ from colette_cli.template import (
     run_template_hook,
 )
 from colette_cli.utils.config import (
+    DEFAULT_AGENT_COMMAND,
     get_machine,
     get_project,
     load_config,
     load_projects,
     require_machine,
-    save_projects,
 )
 from colette_cli.utils.formatting import bold, cyan, dim, err, info, red
 from colette_cli.utils.helpers import (
     all_template_names,
     build_projects_by_machine,
+    delete_project_record,
     find_template_as_project,
     is_remote_machine,
+    resolve_ide_command,
+    write_project_record,
 )
 from colette_cli.utils.ssh import ssh_interactive, ssh_run
 from colette_cli.utils.tmux import get_sessions, local_tmux_session
@@ -106,8 +110,7 @@ def cmd_create(args):
     template_metadata = get_template_metadata(machine, machine_name, template_name)
 
     is_remote = is_remote_machine(machine)
-    project_path = str(Path(projects_dir) / name)
-
+    project_path = str(Path(projects_dir).expanduser() / name)
     info(
         f"Creating project '{name}' on machine '{machine_name}' at '{project_path}' ..."
     )
@@ -177,8 +180,7 @@ def cmd_create(args):
         "oncreate",
         fail_on_error=True,
     )
-    projects.append(project)
-    save_projects(projects)
+    write_project_record(machine, machine_name, project)
     info(f"Project '{name}' created.")
 
 
@@ -233,7 +235,7 @@ def cmd_delete(args, skip_confirmation: bool = False):
         if path.exists():
             shutil.rmtree(str(path))
 
-    save_projects([item for item in load_projects() if item["name"] != name])
+    delete_project_record(machine, machine_name, name)
     info(f"Project '{name}' deleted.")
 
 
@@ -253,8 +255,31 @@ def cmd_list(args):
         for project in sorted(by_machine[machine_name], key=lambda x: x["name"]):
             pname = project["name"]
             template = project.get("template") or dim("--")
-            print(f"  {cyan(f'{pname:<30}')}  {template:<20}  {dim(project['path'])}")
+            suffix = ""
+            if project.get("_cached"):
+                age = _format_age(project.get("_synced_at"))
+                suffix = f"  {dim(f'(cached, synced {age})')}"
+            print(f"  {cyan(f'{pname:<30}')}  {template:<20}  {dim(project['path'])}{suffix}")
     print()
+
+
+def _format_age(synced_at):
+    """Return a short human-readable age string for an ISO-8601 UTC timestamp, or '?'."""
+    if not synced_at:
+        return "?"
+    try:
+        from datetime import datetime, timezone
+        synced = datetime.strptime(synced_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return "?"
+    seconds = max(0, (datetime.now(timezone.utc) - synced).total_seconds())
+    if seconds < 60:
+        return f"{int(seconds)}s ago"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return f"{int(seconds // 86400)}d ago"
 
 
 def cmd_attach(args):
@@ -268,7 +293,7 @@ def cmd_attach(args):
     template_name = get_project_template_name(project)
     template_metadata = get_template_metadata(machine, project["machine"], template_name)
     startup_command = build_project_bootstrap(
-        project, project["machine"], template_metadata, is_remote
+        project, project["machine"], template_metadata, is_remote, machine=machine
     )
 
     tmux_cmd = (
@@ -283,8 +308,8 @@ def cmd_attach(args):
         local_tmux_session(name, project_path, startup_command)
 
 
-def cmd_code(args):
-    """Open a project in VS Code (supports Remote SSH)."""
+def cmd_ide(args):
+    """Open a project in the configured IDE (supports Remote SSH)."""
     name = args.name
     project = require_project(name)
 
@@ -292,15 +317,11 @@ def cmd_code(args):
     machine = get_machine(cfg, project["machine"])
     is_remote = is_remote_machine(machine)
 
-    if is_remote:
-        host = machine.get("host", "")
-        uri = f"vscode-remote://ssh-remote+{host}{project['path']}"
-        subprocess.run(["code", "--folder-uri", uri])
-    else:
-        subprocess.run(["code", str(Path(project["path"]).expanduser())])
+    path = project["path"] if is_remote else str(Path(project["path"]).expanduser())
+    subprocess.run(resolve_ide_command(machine, path))
 
 
-def cmd_unlink(args):
+def cmd_unlink(args, skip_confirmation: bool = False):
     """Unlink a project from colette without deleting its files."""
     name = args.name
     project = require_project(name)
@@ -308,21 +329,26 @@ def cmd_unlink(args):
     if _is_template_proxy(project):
         err(f"'{name}' is a template, not a project. Use 'colette config remove-template' to remove it.")
 
-    answer = input(
-        f"Unlink project '{name}' (path '{project['path']}' on '{project['machine']}' will NOT be deleted)? [y/N]: "
-    ).strip().lower()
-    if answer != "y":
-        print("Aborted.")
-        return
+    if not skip_confirmation:
+        answer = input(
+            f"Unlink project '{name}' (path '{project['path']}' on '{project['machine']}' will NOT be deleted)? [y/N]: "
+        ).strip().lower()
+        if answer != "y":
+            print("Aborted.")
+            return
 
-    save_projects([p for p in load_projects() if p["name"] != name])
+    cfg = load_config()
+    machine = get_machine(cfg, project["machine"])
+    delete_project_record(machine, project["machine"], name)
     info(f"Project '{name}' unlinked (files not deleted).")
 
 
-def _open_copilot_session(name, project_path, machine=None, is_remote=False):
-    """Attach to the existing <name>-copilot tmux session, or start a new one."""
-    tmux_session_name = f"{name}-copilot"
-    sessions = get_sessions(machine or {}, is_remote)
+def _open_agent_session(name, project_path, machine=None, is_remote=False):
+    """Attach to the existing <name>-agent tmux session, or start a new one."""
+    machine = machine or {}
+    tmux_session_name = f"{name}-agent"
+    sessions = get_sessions(machine, is_remote)
+    agent_command = machine.get("agent_command") or DEFAULT_AGENT_COMMAND
 
     if tmux_session_name in sessions:
         if is_remote:
@@ -333,15 +359,15 @@ def _open_copilot_session(name, project_path, machine=None, is_remote=False):
         if is_remote:
             tmux_cmd = (
                 f"tmux set-option -g mouse on \\; new-session -A -s {shlex.quote(tmux_session_name)} "
-                f"-c {shlex.quote(project_path)} bash -lc 'copilot --resume'"
+                f"-c {shlex.quote(project_path)} bash -lc {shlex.quote(agent_command)}"
             )
             ssh_interactive(machine, tmux_cmd)
         else:
-            local_tmux_session(tmux_session_name, project_path, "copilot --resume")
+            local_tmux_session(tmux_session_name, project_path, agent_command)
 
 
-def cmd_copilot(args):
-    """Open a project in GitHub Copilot in a dedicated tmux session."""
+def cmd_agent(args):
+    """Open a project in the configured agent in a dedicated tmux session."""
     name = args.name
     project = require_project(name)
 
@@ -352,7 +378,7 @@ def cmd_copilot(args):
     project_path = project["path"]
     if not is_remote:
         project_path = str(Path(project_path).expanduser())
-    _open_copilot_session(name, project_path, machine=machine, is_remote=is_remote)
+    _open_agent_session(name, project_path, machine=machine, is_remote=is_remote)
 
 
 def cmd_link(args):
@@ -401,6 +427,5 @@ def cmd_link(args):
         "path": path,
         "template": None,
     }
-    projects.append(project)
-    save_projects(projects)
+    write_project_record(machine, machine_name, project)
     info(f"Project '{name}' linked from '{path}' on machine '{machine_name}'.")

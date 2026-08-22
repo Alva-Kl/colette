@@ -8,8 +8,8 @@ from colette_cli.project import (
     cmd_delete,
     cmd_list,
     cmd_attach,
-    cmd_code,
-    cmd_copilot,
+    cmd_ide,
+    cmd_agent,
     cmd_link,
     cmd_unlink,
 )
@@ -19,7 +19,7 @@ from colette_cli.tui import cmd_tui
 from colette_cli.utils.helpers import detect_project_from_cwd
 
 # Commands that accept a single optional project name and fall back to cwd detection
-_CWD_DETECT_COMMANDS = {"attach", "code", "copilot", "delete", "unlink"}
+_CWD_DETECT_COMMANDS = {"attach", "ide", "agent", "delete", "unlink"}
 
 # Batch commands that accept a list of project names and fall back to cwd detection
 # when no projects are given (falls back to all projects if cwd is not a project)
@@ -66,8 +66,8 @@ def main():
         "link": cmd_link,
         "unlink": cmd_unlink,
         "attach": cmd_attach,
-        "code": cmd_code,
-        "copilot": cmd_copilot,
+        "ide": cmd_ide,
+        "agent": cmd_agent,
         "monitor": cmd_monitor,
         "start": cmd_start,
         "stop": cmd_stop,

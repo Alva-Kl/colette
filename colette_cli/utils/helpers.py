@@ -1,5 +1,6 @@
 """Utility functions for project grouping and filtering."""
 
+import shlex
 from pathlib import Path
 
 
@@ -27,6 +28,35 @@ def is_remote_machine(machine):
     return bool(machine and machine.get("type") == "ssh")
 
 
+def resolve_ide_command(machine, path):
+    """Resolve a machine's ide_command into an argv list, ready for subprocess.run.
+
+    The configured (or default) command template is split into argv tokens
+    *before* any substitution, so a path or host containing spaces can never
+    fragment into extra arguments. '{host}' and '{path}' tokens are then
+    substituted into each token. If no token contained '{path}', the resolved
+    path is appended as a trailing argument (so a bare local value like "code"
+    or "zed" works unchanged). The result is always run as a local subprocess
+    (never over SSH) — ide_command targets a remote via its own argv syntax
+    (e.g. a vscode-remote:// or ssh:// URI), not by SSHing out.
+    """
+    from colette_cli.utils.config import (
+        DEFAULT_IDE_COMMAND_LOCAL,
+        DEFAULT_IDE_COMMAND_REMOTE,
+    )
+
+    is_remote = is_remote_machine(machine)
+    default = DEFAULT_IDE_COMMAND_REMOTE if is_remote else DEFAULT_IDE_COMMAND_LOCAL
+    template = machine.get("ide_command") or default
+
+    host = machine.get("host", "")
+    tokens = shlex.split(template)
+    resolved = [token.replace("{host}", host).replace("{path}", path) for token in tokens]
+    if not any("{path}" in token for token in tokens):
+        resolved.append(path)
+    return resolved
+
+
 def iter_machine_projects(projects, cfg, filter_machine=None, filter_names=None):
     """Yield (machine_name, machine_projects, machine, is_remote) for each machine.
 
@@ -43,6 +73,39 @@ def iter_machine_projects(projects, cfg, filter_machine=None, filter_names=None)
             continue
         machine = get_machine(cfg, machine_name) or {}
         yield machine_name, machine_projects, machine, is_remote_machine(machine)
+
+
+def write_project_record(machine, machine_name, project):
+    """Persist a project record wherever it belongs: this machine's own
+    projects.json if *machine* is local, or that machine's own projects.json
+    over SSH if it's remote. Returns True on success.
+
+    *project* may come from the merged load_projects() view (which tags
+    cached entries with internal `_cached`/`_synced_at` keys) — those are
+    always stripped before persisting.
+    """
+    record = {k: v for k, v in project.items() if not k.startswith("_")}
+    if is_remote_machine(machine):
+        from colette_cli.utils.ssh import push_project_entry
+        return push_project_entry(machine, machine_name, record)
+    from colette_cli.utils.config import load_local_projects, save_local_projects
+    projects = [p for p in load_local_projects() if p["name"] != record["name"]]
+    projects.append(record)
+    save_local_projects(projects)
+    return True
+
+
+def delete_project_record(machine, machine_name, name):
+    """Remove a project record (by name) wherever it lives: this machine's own
+    projects.json, or the owning remote machine's own projects.json over SSH.
+    Returns True on success.
+    """
+    if is_remote_machine(machine):
+        from colette_cli.utils.ssh import remove_remote_project_entry
+        return remove_remote_project_entry(machine, machine_name, name)
+    from colette_cli.utils.config import load_local_projects, save_local_projects
+    save_local_projects([p for p in load_local_projects() if p["name"] != name])
+    return True
 
 
 def all_template_names(cfg=None):

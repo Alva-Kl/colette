@@ -15,9 +15,9 @@ LOCAL_CFG = {
 
 class TestRequireProject:
     def test_returns_project_when_found(self, tmp_config):
-        from colette_cli.utils.config import save_projects
+        from colette_cli.utils.config import save_local_projects
         from colette_cli.project.commands import require_project
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         p = require_project("proj")
         assert p["name"] == "proj"
 
@@ -34,13 +34,37 @@ class TestCmdList:
         assert "No projects" in capsys.readouterr().out
 
     def test_lists_projects_by_machine(self, tmp_config, capsys):
-        from colette_cli.utils.config import save_projects
+        from colette_cli.utils.config import save_local_projects
         from colette_cli.project.commands import cmd_list
-        save_projects([make_project("alpha"), make_project("beta")])
+        save_local_projects([make_project("alpha"), make_project("beta")])
         cmd_list(MagicMock())
         out = capsys.readouterr().out
         assert "alpha" in out
         assert "beta" in out
+
+    def test_marks_cached_remote_projects(self, tmp_config, capsys):
+        from colette_cli.utils.config import save_config, save_local_projects, save_machine_cache
+        from colette_cli.project.commands import cmd_list
+        save_config({
+            "machines": {
+                "local": make_local_machine(),
+                "myserver": {"type": "ssh", "host": "server", "colette_path": "/bin/colette"},
+            },
+            "default_machine": "local",
+        })
+        save_local_projects([make_project("local-proj")])
+        save_machine_cache("myserver", {
+            "machine": "myserver",
+            "synced_at": "2026-01-01T00:00:00Z",
+            "projects_dir": "/home/user",
+            "templates": [],
+            "projects": [{"name": "remote-proj", "machine": "local", "path": "/home/user/remote-proj", "template": None}],
+        })
+        cmd_list(MagicMock())
+        out = capsys.readouterr().out
+        assert "local-proj" in out
+        assert "remote-proj" in out
+        assert "cached" in out
 
 
 class TestCmdLink:
@@ -84,10 +108,10 @@ class TestCmdLink:
             cmd_link(args)
 
     def test_link_fails_on_duplicate_name(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.project.commands import cmd_link
         save_config(LOCAL_CFG)
-        save_projects([make_project("existing")])
+        save_local_projects([make_project("existing")])
         project_dir = tmp_path / "existing"
         project_dir.mkdir()
         args = MagicMock()
@@ -113,10 +137,10 @@ class TestCmdLink:
 
 class TestCmdUnlink:
     def test_unlinks_project_on_confirmation(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects, load_projects
+        from colette_cli.utils.config import save_config, save_local_projects, load_projects
         from colette_cli.project.commands import cmd_unlink
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         args = MagicMock()
         args.name = "proj"
         with patch("builtins.input", return_value="y"):
@@ -124,10 +148,10 @@ class TestCmdUnlink:
         assert load_projects() == []
 
     def test_unlink_aborts_on_no(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects, load_projects
+        from colette_cli.utils.config import save_config, save_local_projects, load_projects
         from colette_cli.project.commands import cmd_unlink
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         args = MagicMock()
         args.name = "proj"
         with patch("builtins.input", return_value="n"):
@@ -135,12 +159,12 @@ class TestCmdUnlink:
         assert len(load_projects()) == 1
 
     def test_unlink_does_not_delete_files(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.project.commands import cmd_unlink
         save_config(LOCAL_CFG)
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
-        save_projects([make_project("proj", path=str(project_dir))])
+        save_local_projects([make_project("proj", path=str(project_dir))])
         args = MagicMock()
         args.name = "proj"
         with patch("builtins.input", return_value="y"):
@@ -157,12 +181,12 @@ class TestCmdUnlink:
 
 class TestCmdDelete:
     def test_delete_removes_files_and_record(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects, load_projects
+        from colette_cli.utils.config import save_config, save_local_projects, load_projects
         from colette_cli.project.commands import cmd_delete
         save_config(LOCAL_CFG)
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
-        save_projects([make_project("proj", path=str(project_dir))])
+        save_local_projects([make_project("proj", path=str(project_dir))])
         args = MagicMock()
         args.name = "proj"
         with patch("builtins.input", return_value="proj"):
@@ -171,12 +195,12 @@ class TestCmdDelete:
         assert load_projects() == []
 
     def test_delete_aborts_on_wrong_name(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects, load_projects
+        from colette_cli.utils.config import save_config, save_local_projects, load_projects
         from colette_cli.project.commands import cmd_delete
         save_config(LOCAL_CFG)
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
-        save_projects([make_project("proj", path=str(project_dir))])
+        save_local_projects([make_project("proj", path=str(project_dir))])
         args = MagicMock()
         args.name = "proj"
         with patch("builtins.input", return_value="wrong"):
@@ -185,12 +209,12 @@ class TestCmdDelete:
         assert len(load_projects()) == 1
 
     def test_delete_skip_confirmation_removes_without_prompt(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects, load_projects
+        from colette_cli.utils.config import save_config, save_local_projects, load_projects
         from colette_cli.project.commands import cmd_delete
         save_config(LOCAL_CFG)
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
-        save_projects([make_project("proj", path=str(project_dir))])
+        save_local_projects([make_project("proj", path=str(project_dir))])
         args = MagicMock()
         args.name = "proj"
         with patch("builtins.input") as mock_input:
@@ -202,7 +226,7 @@ class TestCmdDelete:
     def test_ondelete_hook_runs_before_delete(self, tmp_config, tmp_path):
         """The ondelete hook executes before project files are removed."""
         from colette_cli.utils.config import (
-            save_config, save_projects, load_projects,
+            save_config, save_local_projects, load_projects,
             write_machine_template_hook, save_templates,
         )
         from colette_cli.project.commands import cmd_delete
@@ -224,7 +248,7 @@ class TestCmdDelete:
         }
         save_config(cfg)
         save_templates({"templates": [{"name": "tmpl", "params": {}}]})
-        save_projects([make_project("proj", path=str(project_dir), template="tmpl")])
+        save_local_projects([make_project("proj", path=str(project_dir), template="tmpl")])
 
         args = MagicMock()
         args.name = "proj"
@@ -303,8 +327,9 @@ class TestCmdCreate:
         assert any(p["name"] == "bare-project" and p["template"] is None for p in projects)
 
     def test_create_remote_no_template(self, tmp_config, tmp_path):
-        """Creates a directory via ssh mkdir when no template is given (remote machine)."""
-        from colette_cli.utils.config import save_config, load_projects
+        """Creates a directory via ssh mkdir when no template is given (remote machine),
+        then pushes the new project's record to the remote's own projects.json."""
+        from colette_cli.utils.config import save_config
         from colette_cli.project.commands import cmd_create
 
         cfg = {
@@ -327,13 +352,16 @@ class TestCmdCreate:
         no_exists = MagicMock(stdout="", returncode=0)
         mkdir_ok = MagicMock(stdout="", returncode=0)
 
-        with patch("colette_cli.project.commands.ssh_run", side_effect=[no_exists, mkdir_ok]) as mock_ssh:
+        with patch("colette_cli.project.commands.ssh_run", side_effect=[no_exists, mkdir_ok]) as mock_ssh, \
+             patch("colette_cli.project.commands.write_project_record") as mock_write:
             cmd_create(args)
 
         calls = [c[0][1] for c in mock_ssh.call_args_list]
         assert any("mkdir" in c for c in calls)
-        projects = load_projects()
-        assert any(p["name"] == "bare-remote" and p["template"] is None for p in projects)
+        mock_write.assert_called_once()
+        pushed_project = mock_write.call_args[0][2]
+        assert pushed_project["name"] == "bare-remote"
+        assert pushed_project["template"] is None
 
     def test_create_local_skips_template_when_blank_input(self, tmp_config, tmp_path):
         """Pressing Enter at the template prompt creates an empty project."""
@@ -367,73 +395,93 @@ class TestCmdCreate:
         assert any(p["name"] == "scratch-project" and p["template"] is None for p in projects)
 
 
-class TestCmdCopilot:
-    def test_copilot_local_no_existing_session_starts_copilot(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
-        from colette_cli.project.commands import cmd_copilot
+class TestCmdAgent:
+    def test_agent_local_no_existing_session_starts_agent(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_agent
 
         project_path = str(tmp_path / "my-project")
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([make_project("my-project", path=project_path)])
+        save_local_projects([make_project("my-project", path=project_path)])
 
         args = MagicMock()
         args.name = "my-project"
 
         with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
              patch("colette_cli.project.commands.local_tmux_session") as mock_tmux:
-            cmd_copilot(args)
+            cmd_agent(args)
 
         mock_tmux.assert_called_once()
         call_args = mock_tmux.call_args
-        assert call_args[0][0] == "my-project-copilot"
+        assert call_args[0][0] == "my-project-agent"
         assert call_args[0][1] == project_path
         assert call_args[0][2] == "copilot --resume"
 
-    def test_copilot_local_existing_session_attaches(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
-        from colette_cli.project.commands import cmd_copilot
+    def test_agent_local_existing_session_attaches(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_agent
 
         project_path = str(tmp_path / "my-project")
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([make_project("my-project", path=project_path)])
+        save_local_projects([make_project("my-project", path=project_path)])
 
         args = MagicMock()
         args.name = "my-project"
 
-        # Existing copilot session → should just attach (exec bash command)
-        with patch("colette_cli.project.commands.get_sessions", return_value={"my-project-copilot"}), \
+        # Existing agent session → should just attach (exec bash command)
+        with patch("colette_cli.project.commands.get_sessions", return_value={"my-project-agent"}), \
              patch("colette_cli.project.commands.local_tmux_session") as mock_tmux:
-            cmd_copilot(args)
+            cmd_agent(args)
 
         mock_tmux.assert_called_once()
         call_args = mock_tmux.call_args
-        assert call_args[0][0] == "my-project-copilot"
+        assert call_args[0][0] == "my-project-agent"
         assert call_args[0][2] == "exec bash"
 
-    def test_copilot_session_name_is_project_copilot(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
-        from colette_cli.project.commands import cmd_copilot
+    def test_agent_session_name_is_project_agent(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_agent
 
         project_path = str(tmp_path / "alpha")
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([make_project("alpha", path=project_path)])
+        save_local_projects([make_project("alpha", path=project_path)])
 
         args = MagicMock()
         args.name = "alpha"
 
         with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
              patch("colette_cli.project.commands.local_tmux_session") as mock_tmux:
-            cmd_copilot(args)
+            cmd_agent(args)
 
         session_name = mock_tmux.call_args[0][0]
-        assert session_name == "alpha-copilot"
+        assert session_name == "alpha-agent"
 
-    def test_copilot_remote_machine_uses_ssh(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
-        from colette_cli.project.commands import cmd_copilot
+    def test_agent_local_custom_agent_command(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_agent
+
+        project_path = str(tmp_path / "my-project")
+        machine = make_local_machine()
+        machine["agent_command"] = "claude"
+        cfg = {"machines": {"local": machine}, "default_machine": "local"}
+        save_config(cfg)
+        save_local_projects([make_project("my-project", path=project_path)])
+
+        args = MagicMock()
+        args.name = "my-project"
+
+        with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
+             patch("colette_cli.project.commands.local_tmux_session") as mock_tmux:
+            cmd_agent(args)
+
+        assert mock_tmux.call_args[0][2] == "claude"
+
+    def test_agent_remote_machine_uses_ssh(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_agent
 
         cfg = {
             "machines": {
@@ -442,41 +490,129 @@ class TestCmdCopilot:
             "default_machine": "remote",
         }
         save_config(cfg)
-        save_projects([make_project("my-project", machine="remote", path="/home/user/my-project")])
+        save_local_projects([make_project("my-project", machine="remote", path="/home/user/my-project")])
 
         args = MagicMock()
         args.name = "my-project"
 
         with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
              patch("colette_cli.project.commands.ssh_interactive") as mock_ssh:
-            cmd_copilot(args)
+            cmd_agent(args)
 
         mock_ssh.assert_called_once()
-        # Should launch a tmux session on the remote with the picker command
         tmux_cmd = mock_ssh.call_args[0][1]
-        assert "my-project-copilot" in tmux_cmd
+        assert "my-project-agent" in tmux_cmd
         assert "/home/user/my-project" in tmux_cmd
 
-    def test_copilot_missing_project_exits(self, tmp_config):
-        from colette_cli.project.commands import cmd_copilot
+    def test_agent_missing_project_exits(self, tmp_config):
+        from colette_cli.project.commands import cmd_agent
 
         args = MagicMock()
         args.name = "no-such-project"
 
         with pytest.raises(SystemExit):
-            cmd_copilot(args)
+            cmd_agent(args)
+
+
+class TestCmdIde:
+    def test_ide_local_default_command(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_ide
+
+        project_path = tmp_path / "my-project"
+        project_path.mkdir()
+        cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
+        save_config(cfg)
+        save_local_projects([make_project("my-project", path=str(project_path))])
+
+        args = MagicMock()
+        args.name = "my-project"
+
+        with patch("colette_cli.project.commands.subprocess.run") as mock_run:
+            cmd_ide(args)
+
+        mock_run.assert_called_once_with(["code", str(project_path)])
+
+    def test_ide_remote_default_command(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_ide
+
+        cfg = {
+            "machines": {
+                "remote": {"type": "ssh", "host": "server", "projects_dir": "/home/user"}
+            },
+            "default_machine": "remote",
+        }
+        save_config(cfg)
+        save_local_projects([make_project("my-project", machine="remote", path="/home/user/my-project")])
+
+        args = MagicMock()
+        args.name = "my-project"
+
+        with patch("colette_cli.project.commands.subprocess.run") as mock_run:
+            cmd_ide(args)
+
+        mock_run.assert_called_once_with(
+            ["code", "--folder-uri", "vscode-remote://ssh-remote+server/home/user/my-project"]
+        )
+
+    def test_ide_custom_command_with_path_placeholder(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_ide
+
+        cfg = {
+            "machines": {
+                "remote": {
+                    "type": "ssh",
+                    "host": "server",
+                    "projects_dir": "/home/user",
+                    "ide_command": "zed ssh://{host}{path}",
+                }
+            },
+            "default_machine": "remote",
+        }
+        save_config(cfg)
+        save_local_projects([make_project("my-project", machine="remote", path="/home/user/my-project")])
+
+        args = MagicMock()
+        args.name = "my-project"
+
+        with patch("colette_cli.project.commands.subprocess.run") as mock_run:
+            cmd_ide(args)
+
+        mock_run.assert_called_once_with(["zed", "ssh://server/home/user/my-project"])
+
+    def test_ide_custom_bare_command_appends_path(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_ide
+
+        project_path = tmp_path / "my-project"
+        project_path.mkdir()
+        machine = make_local_machine()
+        machine["ide_command"] = "zed"
+        cfg = {"machines": {"local": machine}, "default_machine": "local"}
+        save_config(cfg)
+        save_local_projects([make_project("my-project", path=str(project_path))])
+
+        args = MagicMock()
+        args.name = "my-project"
+
+        with patch("colette_cli.project.commands.subprocess.run") as mock_run:
+            cmd_ide(args)
+
+        mock_run.assert_called_once_with(["zed", str(project_path)])
 
 
 class TestCwdAutoDetect:
     """Integration tests: commands auto-detect project name from cwd."""
 
     def _setup(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         project_path = tmp_path / "my-project"
         project_path.mkdir()
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([make_project("my-project", path=str(project_path))])
+        save_local_projects([make_project("my-project", path=str(project_path))])
         return project_path
 
     def test_attach_resolves_from_cwd(self, tmp_config, tmp_path):
@@ -493,8 +629,8 @@ class TestCwdAutoDetect:
         finally:
             os.chdir(orig)
 
-    def test_code_resolves_from_cwd(self, tmp_config, tmp_path):
-        from colette_cli.project.commands import cmd_code
+    def test_ide_resolves_from_cwd(self, tmp_config, tmp_path):
+        from colette_cli.project.commands import cmd_ide
         import os
         project_path = self._setup(tmp_config, tmp_path)
         args = MagicMock()
@@ -503,32 +639,32 @@ class TestCwdAutoDetect:
         try:
             os.chdir(str(project_path))
             with patch("subprocess.run"):
-                cmd_code(args)
+                cmd_ide(args)
         finally:
             os.chdir(orig)
 
     def test_main_resolves_name_from_cwd(self, tmp_config, tmp_path):
         """main() sets args.name from cwd when command is run without a name."""
         import os, sys
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         project_path = tmp_path / "proj"
         project_path.mkdir()
         cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
         save_config(cfg)
-        save_projects([make_project("proj", path=str(project_path))])
+        save_local_projects([make_project("proj", path=str(project_path))])
 
         orig = os.getcwd()
         try:
             os.chdir(str(project_path))
-            with patch.object(sys, "argv", ["colette", "code"]), \
-                 patch("colette_cli.main.cmd_code") as mock_code:
+            with patch.object(sys, "argv", ["colette", "ide"]), \
+                 patch("colette_cli.main.cmd_ide") as mock_ide:
                 from colette_cli.main import main
                 main()
         finally:
             os.chdir(orig)
 
-        mock_code.assert_called_once()
-        resolved_args = mock_code.call_args[0][0]
+        mock_ide.assert_called_once()
+        resolved_args = mock_ide.call_args[0][0]
         assert resolved_args.name == "proj"
 
     def test_main_prints_help_when_no_cwd_match(self, tmp_config, tmp_path):
@@ -537,7 +673,7 @@ class TestCwdAutoDetect:
         orig = os.getcwd()
         try:
             os.chdir(str(tmp_path))
-            with patch.object(sys, "argv", ["colette", "code"]):
+            with patch.object(sys, "argv", ["colette", "ide"]):
                 from colette_cli.main import main
                 with pytest.raises(SystemExit) as exc:
                     main()
@@ -545,9 +681,9 @@ class TestCwdAutoDetect:
             os.chdir(orig)
         assert exc.value.code == 0
 
-    def test_copilot_remote_uses_login_shell(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
-        from colette_cli.project.commands import cmd_copilot
+    def test_agent_remote_uses_login_shell(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_agent
 
         cfg = {
             "machines": {
@@ -556,21 +692,21 @@ class TestCwdAutoDetect:
             "default_machine": "remote",
         }
         save_config(cfg)
-        save_projects([make_project("my-project", machine="remote", path="/home/user/my-project")])
+        save_local_projects([make_project("my-project", machine="remote", path="/home/user/my-project")])
 
         args = MagicMock()
         args.name = "my-project"
 
         with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
              patch("colette_cli.project.commands.ssh_interactive") as mock_ssh:
-            cmd_copilot(args)
+            cmd_agent(args)
 
         tmux_cmd = mock_ssh.call_args[0][1]
         assert "bash -lc 'copilot --resume'" in tmux_cmd
 
-    def test_copilot_remote_with_port_uses_port_in_ssh(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
-        from colette_cli.project.commands import cmd_copilot
+    def test_agent_remote_with_port_uses_port_in_ssh(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_agent
 
         cfg = {
             "machines": {
@@ -579,14 +715,14 @@ class TestCwdAutoDetect:
             "default_machine": "remote",
         }
         save_config(cfg)
-        save_projects([make_project("my-project", machine="remote", path="/home/user/my-project")])
+        save_local_projects([make_project("my-project", machine="remote", path="/home/user/my-project")])
 
         args = MagicMock()
         args.name = "my-project"
 
         with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
              patch("colette_cli.utils.ssh.subprocess.run") as mock_run:
-            cmd_copilot(args)
+            cmd_agent(args)
 
         ssh_calls = [c.args[0] for c in mock_run.call_args_list if c.args and c.args[0][0] == "ssh"]
         assert ssh_calls, "expected an SSH call"
@@ -597,7 +733,7 @@ class TestCwdAutoDetect:
 
 class TestRequireProjectTemplateFallback:
     def test_returns_template_as_project_when_no_project_found(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.project.commands import require_project
         cfg = {
             "machines": {
@@ -609,7 +745,7 @@ class TestRequireProjectTemplateFallback:
             }
         }
         save_config(cfg)
-        save_projects([])
+        save_local_projects([])
         result = require_project("my-tmpl")
         assert result["name"] == "my-tmpl"
         assert result["path"] == "/tmp/my-tmpl"
@@ -617,7 +753,7 @@ class TestRequireProjectTemplateFallback:
         assert result["template"] == "my-tmpl"
 
     def test_git_template_not_found_as_project(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.project.commands import require_project
         cfg = {
             "machines": {
@@ -629,14 +765,14 @@ class TestRequireProjectTemplateFallback:
             }
         }
         save_config(cfg)
-        save_projects([])
+        save_local_projects([])
         with pytest.raises(SystemExit):
             require_project("git-tmpl")
 
 
 class TestCmdCreateTemplateNameConflict:
     def test_errors_when_name_matches_existing_template(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.project.commands import cmd_create
         template_dir = tmp_path / "my-tmpl"
         template_dir.mkdir()
@@ -651,7 +787,7 @@ class TestCmdCreateTemplateNameConflict:
             "default_machine": "local",
         }
         save_config(cfg)
-        save_projects([])
+        save_local_projects([])
         args = MagicMock()
         args.name = "my-tmpl"
         args.machine = "local"
@@ -662,7 +798,7 @@ class TestCmdCreateTemplateNameConflict:
 
 class TestCmdLinkTemplateNameConflict:
     def test_errors_when_name_matches_existing_template(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.project.commands import cmd_link
         template_dir = tmp_path / "my-tmpl"
         template_dir.mkdir()
@@ -679,7 +815,7 @@ class TestCmdLinkTemplateNameConflict:
             "default_machine": "local",
         }
         save_config(cfg)
-        save_projects([])
+        save_local_projects([])
         args = MagicMock()
         args.path = str(link_dir)
         args.name = "my-tmpl"
@@ -690,7 +826,7 @@ class TestCmdLinkTemplateNameConflict:
 
 class TestCmdDeleteTemplateGuard:
     def test_errors_when_given_template_name(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.project.commands import cmd_delete
         template_dir = tmp_path / "my-tmpl"
         template_dir.mkdir()
@@ -705,7 +841,7 @@ class TestCmdDeleteTemplateGuard:
             "default_machine": "local",
         }
         save_config(cfg)
-        save_projects([])
+        save_local_projects([])
         args = MagicMock()
         args.name = "my-tmpl"
         with pytest.raises(SystemExit):
@@ -716,7 +852,7 @@ class TestCmdDeleteTemplateGuard:
 
 class TestCmdUnlinkTemplateGuard:
     def test_errors_when_given_template_name(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.project.commands import cmd_unlink
         template_dir = tmp_path / "my-tmpl"
         template_dir.mkdir()
@@ -731,7 +867,7 @@ class TestCmdUnlinkTemplateGuard:
             "default_machine": "local",
         }
         save_config(cfg)
-        save_projects([])
+        save_local_projects([])
         args = MagicMock()
         args.name = "my-tmpl"
         with pytest.raises(SystemExit):

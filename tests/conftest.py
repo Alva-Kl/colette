@@ -34,6 +34,8 @@ def tmp_config(tmp_path, monkeypatch):
 
     machines_dir = config_dir / "machines"
     machines_dir.mkdir()
+    cache_dir = config_dir / "cache"
+    cache_dir.mkdir()
 
     monkeypatch.setattr(cfg_mod, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(cfg_mod, "CONFIG_FILE", config_dir / "config.json")
@@ -43,6 +45,7 @@ def tmp_config(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg_mod, "PROJECT_HOOKS_DIR", projects_dir)
     monkeypatch.setattr(cfg_mod, "HOOK_FAILURES_FILE", config_dir / "hook-failures.json")
     monkeypatch.setattr(cfg_mod, "MACHINE_SCRIPTS_DIR", machines_dir)
+    monkeypatch.setattr(cfg_mod, "CACHE_DIR", cache_dir)
 
     return config_dir
 
@@ -57,6 +60,12 @@ def write_projects(config_dir, projects):
 
 def write_templates(config_dir, templates):
     (config_dir / "templates.json").write_text(json.dumps(templates))
+
+
+def write_machine_cache(config_dir, machine_name, data):
+    cache_dir = config_dir / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / f"{machine_name}.json").write_text(json.dumps(data))
 
 
 def make_local_machine(projects_dir="/tmp/projects"):

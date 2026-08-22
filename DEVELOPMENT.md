@@ -13,7 +13,7 @@ colette_cli/
   cli/
     parser.py              All argparse definitions (build_parser)
   project/
-    commands.py            create / delete / list / link / unlink / attach / code
+    commands.py            create / delete / list / link / unlink / attach / ide / agent
     __init__.py            Re-exports for the project package
   config/
     commands.py            machine & template management sub-commands
@@ -22,9 +22,14 @@ colette_cli/
     commands.py            start / stop / monitor / logs
     __init__.py            Re-exports for the session package
   template/
-    executor.py            Hook execution (_resolve_hook_with_super, run_template_hook, build_hook_command, build_project_bootstrap)
+    executor.py            Hook execution (_resolve_hook_with_super, run_template_hook, build_hook_command,
+                           build_project_bootstrap, compute_effective_template_hook)
     registry.py            Scaffold / metadata helpers (scaffold_template_hook_files, upsert/remove metadata)
     __init__.py            Re-exports for the template package
+  debug/
+    commands.py            hook-log (failure log) / self-report (internal — dumps this machine's own
+                           projects/templates as JSON, invoked over SSH by `colette config sync`)
+    __init__.py            Re-exports for the debug package
   tui/
     app.py                 cmd_tui entry point — curses wrapper, screen-stack loop, sets tui.state.stdscr
     menu.py                Menu widget — renders items, handles arrow-key navigation, jobs footer
@@ -33,11 +38,16 @@ colette_cli/
     state.py               Shared TUI state: stdscr reference, running_jobs list (thread-safe)
     __init__.py            Re-exports cmd_tui
   utils/
-    config.py              All config file I/O (load/save config.json, projects.json, templates.json, hook files)
-    helpers.py             build_projects_by_machine, filter_projects_by_name, detect_project_from_cwd
+    config.py              Config file I/O — config.json, local-only projects.json (load_local_projects/
+                           save_local_projects), read-only remote cache (load_machine_cache/save_machine_cache),
+                           merged load_projects() view, get_project() with live-SSH fallback, hook files
+    helpers.py             build_projects_by_machine, filter_projects_by_name, detect_project_from_cwd,
+                           resolve_ide_command, write_project_record/delete_project_record dispatcher
     formatting.py          ANSI colours, err() / warn() / info()
     validation.py          validate_project_name / validate_machine_name
-    ssh.py                 ssh_run, ssh_interactive
+    ssh.py                 ssh_run, ssh_interactive, sync_remote_colette (binary push), fetch_self_report
+                           (project/template pull), push_project_entry/remove_remote_project_entry,
+                           push_project_hooks/push_template_hooks, ssh_read_hook_files (batched fetch)
     tmux.py                local_tmux_session, ensure_session, get_sessions, create_tmux_window_with_panes
     notify.py              send_notification(title, body) — desktop notifications (Linux/macOS)
 tests/
@@ -67,9 +77,19 @@ DEVELOPMENT.md             This file
 
 ## Config file schemas
 
-All state lives under `~/.config/colette/`.
+All state lives under `~/.config/colette/`, and is **local to whichever
+machine you're looking at** — see "Decentralized remote-machine model"
+below for the full picture. This section documents the schema of each file
+as it exists on a single machine.
 
 ### `config.json`
+
+Machine entries come in two shapes: the machine's own definition(s)
+(`type: "local"`, full data), and connection stubs for known remote
+machines (`type: "ssh"`, connection info only — no `projects_dir`/
+`templates`, since that's the remote's own business, reachable only via the
+read-only cache described below).
+
 ```json
 {
   "default_machine": "local",
@@ -77,6 +97,8 @@ All state lives under `~/.config/colette/`.
     "local": {
       "type": "local",
       "projects_dir": "/home/user/projects",
+      "agent_command": "copilot --resume",
+      "ide_command": "code",
       "templates": [
         { "name": "my-tmpl", "type": "directory", "path": "/home/user/templates/my-tmpl" },
         { "name": "from-git", "type": "git", "url": "https://github.com/user/tmpl.git" }
@@ -86,14 +108,41 @@ All state lives under `~/.config/colette/`.
       "type": "ssh",
       "host": "user@192.168.1.10",
       "ssh_key": "/home/user/.ssh/id_ed25519",
-      "projects_dir": "/home/user/projects",
-      "templates": []
+      "colette_path": "/home/user/.local/bin/colette",
+      "agent_command": "claude",
+      "ide_command": "code --folder-uri vscode-remote://ssh-remote+{host}{path}"
     }
   }
 }
 ```
 
+`agent_command`/`ide_command` on a remote connection stub are
+**controller-side only** — they describe how *this* machine talks to
+`server` (the literal command embedded in the SSH+tmux session; the local
+argv `ide_command` resolves to), never fetched from or pushed to the
+remote's own config. `colette config edit-machine server` run from a
+different controller could set different values for the same remote.
+
+`agent_command`/`ide_command` are optional free-text fields, no validation.
+When unset, `colette_cli.utils.config` exposes the fallback defaults
+(`DEFAULT_AGENT_COMMAND`, `DEFAULT_IDE_COMMAND_LOCAL`,
+`DEFAULT_IDE_COMMAND_REMOTE`) — call sites always read them as
+`machine.get("agent_command") or DEFAULT_AGENT_COMMAND`, never a bare
+`.get(..., default)`, so an explicitly empty string also falls back.
+`ide_command` is resolved via `resolve_ide_command()` in `utils/helpers.py`:
+it's `shlex.split()` first, then `{host}`/`{path}` tokens are substituted
+into each argv token, and the path is appended as a trailing argument only
+if no token contained `{path}` — see that function's docstring for the full
+algorithm. `ide_command` always runs as a local subprocess, even for a
+remote project; it never SSHes anywhere itself.
+
 ### `projects.json`
+
+**Local-only** — this machine's own projects, never a remote's. A project
+created on a remote machine (`colette create -m server ...`) lives in
+*that* machine's own `projects.json`, reached over SSH at create/delete/
+rename time, never written here.
+
 ```json
 [
   {
@@ -105,7 +154,9 @@ All state lives under `~/.config/colette/`.
 ]
 ```
 
-`template` may be `null` for linked projects with no template.
+`template` may be `null` for linked projects with no template. `machine`
+always names one of this config's own `type: "local"` entries — never a
+remote connection stub.
 
 ### `templates.json`
 ```json
@@ -119,6 +170,39 @@ All state lives under `~/.config/colette/`.
   ]
 }
 ```
+
+Legacy metadata-only fallback — the primary source of template definitions
+is the `templates` list embedded in a machine's own `config.json` entry.
+
+### `cache/<machine>.json` — read-only remote cache
+
+Populated by `colette config sync [machine]`, one file per known remote
+machine. **Machine-generated and read-only** — never hand-edited, always
+overwritten wholesale by the next sync.
+
+```json
+{
+  "machine": "server",
+  "synced_at": "2026-01-01T12:00:00Z",
+  "projects_dir": "/home/user/projects",
+  "templates": [
+    { "name": "my-tmpl", "type": "directory", "path": "/home/user/templates/my-tmpl" }
+  ],
+  "projects": [
+    { "name": "remote-project", "machine": "local", "path": "/home/user/projects/remote-project", "template": "my-tmpl" }
+  ]
+}
+```
+
+`projects` here is the remote's own `projects.json` verbatim (so each
+entry's `machine` field is the *remote's* self-name, typically `"local"` —
+not the controller's connection name for it, e.g. `"server"`). The merged
+read view in `load_projects()` (`utils/config.py`) remaps this to the
+controller's connection name and tags each entry `_cached: True` before
+handing it to callers — see "Decentralized remote-machine model" below.
+`templates` here is metadata only (name/type/path-or-url/description/
+params) — hook script *bodies* are never cached; they're always fetched
+fresh over SSH at execution time (see the hook system section below).
 
 ### Hook file directories
 
@@ -141,37 +225,137 @@ All state lives under `~/.config/colette/`.
 
 ## Hook system architecture
 
-1. **Resolution order**: `_resolve_hook_with_super` in `template/executor.py` first checks the
-   project-specific hook (`projects/<project>/.<hook>`), then falls back to the
-   template hook (`templates/<template>/.<hook>`). A hook is only "effective" if
-   it contains at least one non-comment, non-shebang line (`_has_effective_script`).
+Resolution differs by whether the project's machine is local or remote —
+`_resolve_hook_with_super` in `template/executor.py` branches on whether a
+pre-fetched `remote_hooks` dict is supplied:
 
-2. **SUPER inheritance**: When a project-level hook is active, `$SUPER` is set to
-   the corresponding template hook file path. The project hook can call
-   `source "$SUPER"` to also run the template hook (inheritance pattern). `$SUPER`
-   is never set for template-level hooks to prevent self-sourcing.
+1. **Local resolution order** (`remote_hooks=None`): first checks the
+   project-specific hook (`projects/<project>/.<hook>`), then the
+   machine-scoped template override (`machines/<machine>/templates/<template>/.<hook>`),
+   then falls back to the shared template hook (`templates/<template>/.<hook>`).
+   A hook is only "effective" if it contains at least one non-comment,
+   non-shebang line (`_has_effective_script`). All three tiers are read
+   straight off local disk.
 
-3. **coletterc**: `_prepend_coletterc` prepends the resolved coletterc content
+2. **Remote resolution order** (`remote_hooks` supplied): collapses to two
+   tiers — project hook, then template hook — both read from a dict
+   pre-fetched over SSH by `ssh_read_hook_files` (`utils/ssh.py`), which
+   fetches every hook name's project- and template-level content in **one**
+   SSH round-trip (a delimited `cat` loop), not one round-trip per hook.
+   There's no separate machine-override tier remotely: the remote's own
+   `templates/<template>/.<hook>` *is* already the machine-specific,
+   already-flattened copy — see `push_template_hooks` below. Remote hook
+   content is never cached locally; it's fetched fresh on every hook
+   invocation, trading one extra SSH round-trip for the guarantee that
+   remote-owned hooks are never run stale.
+
+3. **SUPER inheritance**: When a project-level hook is active and wants to
+   chain to its template hook, `$SUPER` is set to point at it. Locally this
+   is a literal file path; when the "super" source is a `_FetchedContent`
+   instance (remote_hooks mode) or `is_remote=True` with a local path, its
+   content is inlined via a base64-encoded tempfile instead (`_super_assignment`)
+   — see `push_template_hooks` for how remote copies get pre-flattened so
+   remote resolution never needs a *second* level of $SUPER-over-SSH.
+   `$SUPER` is never set for template-level hooks to prevent self-sourcing.
+
+4. **coletterc**: `_prepend_coletterc` prepends the resolved coletterc content
    before every hook command — `run_template_hook` and `build_hook_command` both
-   call it. When a project-level coletterc is active, `SUPER` is set before the
-   coletterc content so it can inherit from the template coletterc.
+   call it, threading the same `remote_hooks` dict through so coletterc and
+   the main hook share one SSH fetch. When a project-level coletterc is
+   active, `SUPER` is set before the coletterc content so it can inherit
+   from the template coletterc.
 
-4. **Execution**: `run_template_hook` runs the resolved+prepended script via
+5. **Execution**: `run_template_hook` runs the resolved+prepended script via
    `bash -lc` either locally (`subprocess.run`) or remotely (`ssh_run`).
 
-5. **Interactive hooks** (`onlogs`, `attach`): `build_hook_command` assembles a
+6. **Interactive hooks** (`onlogs`, `attach`): `build_hook_command` assembles a
    full shell command string with coletterc prepended and env assignments, then
    passes it to `local_tmux_session` or `ssh_interactive`.
 
-6. **Bootstrap** (`coletterc` for terminal sessions): `build_project_bootstrap`
+7. **Bootstrap** (`coletterc` for terminal sessions): `build_project_bootstrap`
    generates `exec bash --rcfile <(echo BASE64 | base64 -d)` where the decoded
    rcfile sources `~/.bashrc` first, then coletterc. This ensures venv activations
    in coletterc are applied *after* `.bashrc` and therefore persist in the
-   interactive terminal.
+   interactive terminal. Takes an optional `machine` param, required when
+   `is_remote=True` so it can fetch coletterc content over SSH.
+
+### Pushing hooks to a remote machine
+
+Authoring stays controller-local (`colette config edit-hook`/`add-template`/
+`edit-template` still open a local file in `nano`) — but every save pushes
+eagerly to the target machine over SSH if it's remote, instead of waiting
+for the next `colette config sync`:
+
+- **`push_template_hooks`** (`utils/ssh.py`): for each hook name, computes
+  the *effective* content for that specific machine — its machine-scoped
+  override if effective, else the shared template hook — via
+  `compute_effective_template_hook` (`template/executor.py`), inlining any
+  `source "$SUPER"` chain between them (base64 tempfile trick) so the
+  pushed copy is fully self-contained. Called from
+  `cmd_config_add_template`/`edit_template`/`edit_hook`/`remove_template`
+  (as a delete)/`rename_template` (as a move) whenever the target machine
+  is remote.
+- **`push_project_hooks`**: pushes a project's own hook-override files
+  *verbatim* (no flattening) — a project hook's `source "$SUPER"` is left
+  intact and resolves dynamically at remote execution time against
+  whatever's currently in that machine's `templates/<template>/` (kept
+  fresh by `push_template_hooks`). Called from `cmd_config_edit_project_hook`.
+- `inject_project_config` (the old combined push-everything-on-sync
+  function) no longer exists — replaced by these two eager-push functions
+  plus `push_project_entry`/`remove_remote_project_entry` for project
+  *records* (see below).
 
 ---
 
-## Build and remote sync
+## Decentralized remote-machine model
+
+Each machine's `~/.config/colette/` is authoritative only for its own
+projects and templates — the controller never keeps a permanent, owned copy
+of a remote's data. Two independent mechanisms make this work, kept
+deliberately separate:
+
+1. **Binary sync (push, unchanged from before this model)** —
+   `sync_remote_colette` (`utils/ssh.py`) SCPs the local `build/prod/colette`
+   binary to a remote's configured `colette_path` when versions differ. The
+   binary genuinely originates on the controller (built via
+   `./scripts/build.sh`); there's nothing to pull. Thread-local cache
+   (`_synced_machines`) avoids re-checking the same machine twice per
+   process invocation. **Only actually called from**: `cmd_start`,
+   `cmd_update`, the TUI's manual "Sync colette" action, and
+   `cmd_config_sync` — not from every SSH-touching command (`create`,
+   `delete`, `attach`, `ide`, `agent`, `link`, `stop` never trigger it).
+2. **Project/template sync (pull)** — `colette config sync [machine]`
+   (`cmd_config_sync`, `config/commands.py`) runs binary sync, then SSHs a
+   internal `colette debug self-report` command on the remote (which dumps
+   that machine's own `projects.json` plus its own machine entry's
+   `projects_dir`/`templates` as JSON — `cmd_debug_self_report`,
+   `debug/commands.py`) and writes the result into
+   `~/.config/colette/cache/<machine>.json`. This is the **only** way the
+   cache gets refreshed in bulk; nothing pushes local data to a remote's
+   registry.
+
+Two smaller mechanisms round this out — both described in "Hook system
+architecture" above and "Config file schemas" below, respectively:
+eager hook pushes (`push_template_hooks`/`push_project_hooks`, triggered by
+every `edit-hook`/`add-template`/`edit-project-hook` etc.) and project
+*record* pushes (`push_project_entry`/`remove_remote_project_entry`,
+triggered by `cmd_create`/`cmd_delete`/`cmd_link`/`cmd_unlink`/
+`cmd_config_rename_template` via the `write_project_record`/
+`delete_project_record` dispatcher in `utils/helpers.py`, which routes to
+either the local `projects.json` or the remote's own over SSH depending on
+`is_remote_machine(machine)`).
+
+### Live fallback for stale caches
+
+`get_project(name)` (`utils/config.py`) — the single chokepoint under
+`require_project`, used by all single-name lookups (`ide`, `agent`,
+`attach`, `delete`, `unlink`, `logs <name>`, `edit-project-hook`) — falls
+back to a live SSH self-report check against every configured remote
+machine when a name isn't found in the merged local+cache view, patching
+that machine's cache opportunistically on a hit. This is **not** wired into
+`load_projects()` itself, so batch/listing commands (`list`, `start`,
+`stop`, `update`, `monitor`) stay cache-only and fast — they never trigger
+a live SSH round-trip just because a project happens to be missing.
 
 ### Build pipeline
 
@@ -189,22 +373,7 @@ All state lives under `~/.config/colette/`.
 `build/prod/colette` is the **canonical local binary**. It is the file that gets
 copied to remote machines and the file that `colette --version` reports.
 
-### Automatic remote sync
-
-Every colette command that SSHs to a remote machine automatically:
-
-1. **Syncs the binary** — runs `colette_path --version` on the remote; if the
-   version differs from the local `build/prod/colette`, copies it via SCP and
-   creates the parent directory if needed.
-2. **Syncs the config** — pushes a filtered `~/.config/colette/` snapshot
-   (config.json, projects.json, templates.json, and relevant hook directories)
-   to the remote machine via `tar xzf` over SSH stdin. The local machine is
-   always the source of truth; the remote config is overwritten.
-
-This happens at most once per machine per process invocation (cached in
-`_synced_machines`).
-
-### Status messages
+### Status messages (binary sync)
 
 | Outcome | Message |
 |---|---|
@@ -220,10 +389,10 @@ This happens at most once per machine per process invocation (cached in
 ./scripts/build.sh && ./scripts/build.sh prod
 ```
 
-The manual sync command (useful for debugging) is:
+The manual sync command (useful for debugging, also runs the project/template pull) is:
 
 ```bash
-colette config sync-remote [machine-name]
+colette config sync [machine-name]
 ```
 
 ---

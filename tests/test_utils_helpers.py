@@ -69,11 +69,11 @@ class TestIsRemoteMachine:
 
 class TestDetectProjectFromCwd:
     def test_returns_project_name_when_cwd_matches(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_projects
+        from colette_cli.utils.config import save_local_projects
         from colette_cli.utils.helpers import detect_project_from_cwd
         project_path = tmp_path / "my-project"
         project_path.mkdir()
-        save_projects([{"name": "my-project", "machine": "local", "path": str(project_path)}])
+        save_local_projects([{"name": "my-project", "machine": "local", "path": str(project_path)}])
 
         import os
         orig = os.getcwd()
@@ -86,13 +86,13 @@ class TestDetectProjectFromCwd:
         assert result == "my-project"
 
     def test_returns_none_when_cwd_does_not_match(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import save_projects
+        from colette_cli.utils.config import save_local_projects
         from colette_cli.utils.helpers import detect_project_from_cwd
         project_path = tmp_path / "my-project"
         project_path.mkdir()
         other_path = tmp_path / "other"
         other_path.mkdir()
-        save_projects([{"name": "my-project", "machine": "local", "path": str(project_path)}])
+        save_local_projects([{"name": "my-project", "machine": "local", "path": str(project_path)}])
 
         import os
         orig = os.getcwd()
@@ -575,144 +575,179 @@ class TestSyncRemoteColette:
         assert result == tmp_path / "build" / "prod" / "colette"
 
 
-    def test_transfers_project_hooks_and_json(self, tmp_config):
-        from unittest.mock import patch, MagicMock, call
-        from colette_cli.utils.ssh import inject_project_config
-        from colette_cli.utils.config import save_projects, PROJECT_HOOKS_DIR
+    def test_push_project_entry_merges_by_name_and_remaps_machine(self, tmp_config):
+        """push_project_entry merges into the remote's own projects.json and
+        rewrites "machine" to the remote's own self-name (from its config.json),
+        not the controller's connection name for it."""
+        from unittest.mock import patch, MagicMock
+        from colette_cli.utils.ssh import push_project_entry
 
+        machine = {"type": "ssh", "host": "myhost"}
         project = {"name": "myproj", "machine": "remote-box", "path": "/p/myproj", "template": None}
-        save_projects([project])
 
-        # Create a local hook file
+        remote_config = {"machines": {"local": {"type": "local"}}, "default_machine": "local"}
+        ok = MagicMock(returncode=0)
+
+        def fake_ssh_run(m, cmd, extra_opts=None):
+            if "config.json" in cmd:
+                import json
+                return MagicMock(returncode=0, stdout=json.dumps(remote_config))
+            if "projects.json" in cmd:
+                return MagicMock(returncode=0, stdout="[]")
+            return ok
+
+        with patch("colette_cli.utils.ssh.ssh_run", side_effect=fake_ssh_run), \
+             patch("subprocess.run", return_value=ok) as mock_run:
+            result = push_project_entry(machine, "remote-box", project)
+
+        assert result is True
+        write_calls = [c for c in mock_run.call_args_list if "cat >" in (c.args[0][-1] if c.args else "")]
+        assert any("projects.json" in c.args[0][-1] for c in write_calls)
+        json_write = next(c for c in write_calls if "projects.json" in c.args[0][-1])
+        written = json_write.kwargs["input"].decode()
+        assert '"machine": "local"' in written
+        assert '"name": "myproj"' in written
+
+    def test_push_project_entry_warns_when_remote_has_no_local_machine(self, tmp_config, capsys):
+        from unittest.mock import patch, MagicMock
+        from colette_cli.utils.ssh import push_project_entry
+
+        machine = {"type": "ssh", "host": "myhost"}
+        project = {"name": "myproj", "machine": "remote-box", "path": "/p/myproj", "template": None}
+
+        with patch("colette_cli.utils.ssh.ssh_run", return_value=MagicMock(returncode=0, stdout="{}")):
+            result = push_project_entry(machine, "remote-box", project)
+
+        assert result is False
+        assert "no local machine entry" in capsys.readouterr().err
+
+    def test_remove_remote_project_entry(self, tmp_config):
+        from unittest.mock import patch, MagicMock
+        from colette_cli.utils.ssh import remove_remote_project_entry
+
+        machine = {"type": "ssh", "host": "myhost"}
+        existing = [{"name": "keep-me", "machine": "local"}, {"name": "gone", "machine": "local"}]
+
+        def fake_ssh_run(m, cmd, extra_opts=None):
+            import json
+            return MagicMock(returncode=0, stdout=json.dumps(existing))
+
+        ok = MagicMock(returncode=0)
+        with patch("colette_cli.utils.ssh.ssh_run", side_effect=fake_ssh_run), \
+             patch("subprocess.run", return_value=ok) as mock_run:
+            result = remove_remote_project_entry(machine, "remote-box", "gone")
+
+        assert result is True
+        write_call = next(c for c in mock_run.call_args_list if "cat >" in c.args[0][-1])
+        written = write_call.kwargs["input"].decode()
+        assert "gone" not in written
+        assert "keep-me" in written
+
+    def test_push_project_hooks_transfers_files(self, tmp_config):
+        from unittest.mock import patch, MagicMock
+        from colette_cli.utils.ssh import push_project_hooks
+        from colette_cli.utils.config import PROJECT_HOOKS_DIR
+
         hook_dir = PROJECT_HOOKS_DIR / "myproj"
         hook_dir.mkdir(parents=True, exist_ok=True)
         (hook_dir / ".onstart").write_text("#!/bin/bash\necho hi")
 
         machine = {"type": "ssh", "host": "myhost"}
-        ok = MagicMock()
-        ok.returncode = 0
-        ok.stdout = "[]"
+        ok = MagicMock(returncode=0)
 
         with patch("colette_cli.utils.ssh.ssh_run", return_value=ok), \
              patch("subprocess.run", return_value=ok) as mock_run:
-            result = inject_project_config(machine, "remote-box", project)
+            result = push_project_hooks(machine, "remote-box", "myproj")
 
         assert result is True
-        # A subprocess.run call piping the hook content should exist
         write_calls = [c for c in mock_run.call_args_list if "cat >" in (c.args[0][-1] if c.args else "")]
         assert any(".onstart" in c.args[0][-1] for c in write_calls)
 
-    def test_transfers_template_hooks_when_present(self, tmp_config):
-        from unittest.mock import patch, MagicMock
-        from colette_cli.utils.ssh import inject_project_config
-        from colette_cli.utils.config import save_projects, save_templates, TEMPLATE_SCRIPTS_DIR
-
-        project = {"name": "proj2", "machine": "remote-box", "path": "/p/proj2", "template": "mytmpl"}
-        save_projects([project])
-        save_templates({"templates": [{"name": "mytmpl"}]})
-
-        tmpl_dir = TEMPLATE_SCRIPTS_DIR / "mytmpl"
-        tmpl_dir.mkdir(parents=True, exist_ok=True)
-        (tmpl_dir / ".onupdate").write_text("#!/bin/bash\necho update")
+    def test_push_project_hooks_noop_when_no_local_dir(self, tmp_config):
+        from unittest.mock import patch
+        from colette_cli.utils.ssh import push_project_hooks
 
         machine = {"type": "ssh", "host": "myhost"}
-        ok = MagicMock()
-        ok.returncode = 0
-        ok.stdout = "[]"
+        with patch("subprocess.run") as mock_run:
+            result = push_project_hooks(machine, "remote-box", "no-such-project")
+
+        assert result is True
+        mock_run.assert_not_called()
+
+    def test_push_template_hooks_writes_effective_content(self, tmp_config):
+        """push_template_hooks writes the flattened, effective hook content
+        (machine-override if effective, else shared template hook) per hook name."""
+        from unittest.mock import patch, MagicMock
+        from colette_cli.utils.ssh import push_template_hooks
+        from colette_cli.utils.config import write_machine_template_hook
+
+        write_machine_template_hook("remote-box", "mytmpl", "onstart", "#!/bin/bash\necho machine-override")
+
+        machine = {"type": "ssh", "host": "myhost"}
+        ok = MagicMock(returncode=0)
 
         with patch("colette_cli.utils.ssh.ssh_run", return_value=ok), \
              patch("subprocess.run", return_value=ok) as mock_run:
-            result = inject_project_config(machine, "remote-box", project)
+            result = push_template_hooks(machine, "remote-box", "mytmpl")
 
         assert result is True
         write_calls = [c for c in mock_run.call_args_list if "cat >" in (c.args[0][-1] if c.args else "")]
-        assert any(".onupdate" in c.args[0][-1] for c in write_calls)
+        onstart_calls = [c for c in write_calls if c.args[0][-1].endswith(".onstart")]
+        assert onstart_calls, "onstart hook was not pushed"
+        assert b"machine-override" in onstart_calls[0].kwargs["input"]
 
     def test_uses_home_variable_not_tilde(self, tmp_config):
         """Remote paths must use $HOME so the shell expands them, not literal ~."""
         from unittest.mock import patch, MagicMock
-        from colette_cli.utils.ssh import inject_project_config
-        from colette_cli.utils.config import save_projects
-
-        project = {"name": "homechk", "machine": "remote", "path": "/p/homechk", "template": None}
-        save_projects([project])
+        from colette_cli.utils.ssh import push_project_entry
 
         machine = {"type": "ssh", "host": "myhost"}
-        ok = MagicMock()
-        ok.returncode = 0
-        ok.stdout = "[]"
+        project = {"name": "homechk", "machine": "remote", "path": "/p/homechk", "template": None}
+        remote_config = {"machines": {"local": {"type": "local"}}, "default_machine": "local"}
 
         ssh_calls = []
         subprocess_calls = []
 
-        def fake_ssh_run(m, cmd):
+        def fake_ssh_run(m, cmd, extra_opts=None):
             ssh_calls.append(cmd)
-            return ok
+            if "config.json" in cmd:
+                import json
+                return MagicMock(returncode=0, stdout=json.dumps(remote_config))
+            return MagicMock(returncode=0, stdout="[]")
 
         def fake_subprocess_run(args, **kwargs):
             subprocess_calls.append(args[-1] if args else "")
-            return ok
+            return MagicMock(returncode=0)
 
         with patch("colette_cli.utils.ssh.ssh_run", side_effect=fake_ssh_run), \
              patch("subprocess.run", side_effect=fake_subprocess_run):
-            inject_project_config(machine, "remote", project)
+            push_project_entry(machine, "remote", project)
 
         all_cmds = ssh_calls + subprocess_calls
-        # No command should contain a single-quoted tilde
         bad_cmds = [c for c in all_cmds if "'~/" in c]
         assert not bad_cmds, f"Found single-quoted tilde in remote command: {bad_cmds}"
-        # The mkdir command should use $HOME
         mkdir_cmds = [c for c in all_cmds if "mkdir" in c]
         assert all("$HOME" in c for c in mkdir_cmds), f"mkdir not using $HOME: {mkdir_cmds}"
 
-    def test_transfers_machine_template_hooks_when_present(self, tmp_config):
-        """Machine-specific template hook overrides must be transferred to the remote."""
-        from unittest.mock import patch, MagicMock
-        from colette_cli.utils.ssh import inject_project_config
-        from colette_cli.utils.config import save_projects, save_templates, MACHINE_SCRIPTS_DIR
-
-        project = {"name": "proj3", "machine": "remote-box", "path": "/p/proj3", "template": "mytmpl"}
-        save_projects([project])
-        save_templates({"templates": [{"name": "mytmpl"}]})
-
-        machine_tmpl_dir = MACHINE_SCRIPTS_DIR / "remote-box" / "templates" / "mytmpl"
-        machine_tmpl_dir.mkdir(parents=True, exist_ok=True)
-        (machine_tmpl_dir / ".onstart").write_text("#!/bin/bash\necho machine-override")
-
-        machine = {"type": "ssh", "host": "myhost"}
-        ok = MagicMock()
-        ok.returncode = 0
-        ok.stdout = "[]"
-
-        with patch("colette_cli.utils.ssh.ssh_run", return_value=ok), \
-             patch("subprocess.run", return_value=ok) as mock_run:
-            result = inject_project_config(machine, "remote-box", project)
-
-        assert result is True
-        write_calls = [c for c in mock_run.call_args_list if "cat >" in (c.args[0][-1] if c.args else "")]
-        machine_hook_calls = [c for c in write_calls if "machines/remote-box/templates/mytmpl" in c.args[0][-1]]
-        assert machine_hook_calls, "machine-specific template hook was not transferred"
-        assert any(".onstart" in c.args[0][-1] for c in machine_hook_calls)
-
     def test_warns_and_returns_false_on_mkdir_failure(self, tmp_config, capsys):
         from unittest.mock import patch, MagicMock
-        from colette_cli.utils.ssh import inject_project_config
-        from colette_cli.utils.config import save_projects
-
-        project = {"name": "failproj", "machine": "remote", "path": "/p/fail", "template": None}
-        save_projects([project])
+        from colette_cli.utils.ssh import push_project_entry
 
         machine = {"type": "ssh", "host": "myhost"}
-        fail = MagicMock()
-        fail.returncode = 1
-        fail.stdout = ""
-        fail.stderr = "permission denied"
+        project = {"name": "failproj", "machine": "remote", "path": "/p/fail", "template": None}
+        remote_config = {"machines": {"local": {"type": "local"}}, "default_machine": "local"}
 
-        with patch("colette_cli.utils.ssh.ssh_run", return_value=fail):
-            result = inject_project_config(machine, "remote", project)
+        def fake_ssh_run(m, cmd, extra_opts=None):
+            if "config.json" in cmd:
+                import json
+                return MagicMock(returncode=0, stdout=json.dumps(remote_config))
+            return MagicMock(returncode=1, stdout="", stderr="permission denied")
+
+        with patch("colette_cli.utils.ssh.ssh_run", side_effect=fake_ssh_run):
+            result = push_project_entry(machine, "remote", project)
 
         assert result is False
-        assert "inject" in capsys.readouterr().err
+        assert "failed to create remote config dir" in capsys.readouterr().err
 
 
 class TestEnsureSessionRemote:

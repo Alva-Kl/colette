@@ -643,16 +643,31 @@ class TestSuperRemote:
         assert "mktemp" in result
         assert ".config/colette" not in result
 
-    def test_build_project_bootstrap_remote_no_local_path(self, tmp_config):
-        """build_project_bootstrap with is_remote=True must not embed local paths."""
-        from colette_cli.utils.config import write_template_hook, write_project_hook
+    def test_build_project_bootstrap_remote_fetches_over_ssh(self, tmp_config):
+        """build_project_bootstrap with is_remote=True fetches coletterc content
+        from the remote machine (via ssh_read_hook_files) instead of local disk,
+        and must not embed any local config path in the bootstrap string."""
+        from unittest.mock import patch
         from colette_cli.template.executor import build_project_bootstrap
-        write_template_hook("t", "coletterc", "# template rc\nexport FOO=1")
-        write_project_hook("proj", "coletterc", 'source "$SUPER"\nexport BAR=2')
+
+        remote_hooks = {
+            "coletterc": {"project": 'source "$SUPER"\nexport BAR=2', "template": "# template rc\nexport FOO=1"},
+        }
         project = {"name": "proj", "path": "/work/proj", "machine": "remote1"}
-        result = build_project_bootstrap(project, "remote1", {"name": "t"}, is_remote=True)
-        # Must not contain the local config path in the bootstrap string
+        machine = {"type": "ssh", "host": "remote1.example.com"}
+
+        with patch("colette_cli.utils.ssh.ssh_read_hook_files", return_value=remote_hooks) as mock_fetch:
+            result = build_project_bootstrap(project, "remote1", {"name": "t"}, is_remote=True, machine=machine)
+
+        mock_fetch.assert_called_once_with(machine, "proj", "t")
         assert ".config/colette" not in result
+
+        import base64, re
+        m = re.search(r"echo (\S+) \| base64 -d", result)
+        assert m, f"no base64-wrapped rcfile payload found in: {result}"
+        rc_content = base64.b64decode(m.group(1).strip("'")).decode()
+        assert "mktemp" in rc_content and "base64 -d" in rc_content
+        assert "BAR=2" in rc_content
 
 
 class TestMachineSpecificHookResolution:

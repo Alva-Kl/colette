@@ -167,10 +167,10 @@ class TestCmdConfigEditHook:
 
 class TestCmdConfigEditProjectHook:
     def test_opens_nano_for_project_hook(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.config.commands import cmd_config_edit_project_hook
         save_config(LOCAL_CFG)
-        save_projects([make_project("proj")])
+        save_local_projects([make_project("proj")])
         args = MagicMock(project_name="proj", hook_name="onstart")
         with patch("subprocess.run") as mock_run:
             cmd_config_edit_project_hook(args)
@@ -299,115 +299,117 @@ class TestCmdConfigRunTemplateUpdate:
         assert "machines/local/templates/tmpl" in cmd_args[1]
 
 
-class TestCmdConfigSyncRemote:
+class TestCmdConfigSync:
     _REMOTE_CFG = {
         "machines": {
             "myremote": {
                 "type": "ssh",
                 "host": "user@remotehost",
                 "colette_path": "/home/user/scripts/colette",
-                "projects_dir": "/home/user/projects",
             }
         },
         "default_machine": "myremote",
     }
 
+    _REPORT = {
+        "machine": {"projects_dir": "/home/user/projects", "templates": [{"name": "tmpl"}]},
+        "projects": [{"name": "proj-a", "machine": "local", "path": "/home/user/projects/proj-a", "template": None}],
+    }
+
     def test_prints_synced_on_success(self, tmp_config, capsys):
         from colette_cli.utils.config import save_config
-        from colette_cli.config.commands import cmd_config_sync_remote
+        from colette_cli.config.commands import cmd_config_sync
         save_config(self._REMOTE_CFG)
         args = MagicMock(machine_name=None)
-        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True):
-            cmd_config_sync_remote(args)
+        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True), \
+             patch("colette_cli.utils.ssh.fetch_self_report", return_value=self._REPORT):
+            cmd_config_sync(args)
         out = capsys.readouterr().out
         assert "synced" in out and "myremote" in out
 
     def test_prints_up_to_date_when_not_synced(self, tmp_config, capsys):
         from colette_cli.utils.config import save_config
-        from colette_cli.config.commands import cmd_config_sync_remote
+        from colette_cli.config.commands import cmd_config_sync
         save_config(self._REMOTE_CFG)
         args = MagicMock(machine_name=None)
-        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=False):
-            cmd_config_sync_remote(args)
+        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=False), \
+             patch("colette_cli.utils.ssh.fetch_self_report", return_value=self._REPORT):
+            cmd_config_sync(args)
         out = capsys.readouterr().out
         assert "up to date" in out
 
-    def test_silent_when_sync_returns_none(self, tmp_config, capsys):
-        from colette_cli.utils.config import save_config
-        from colette_cli.config.commands import cmd_config_sync_remote
-        save_config(self._REMOTE_CFG)
-        args = MagicMock(machine_name=None)
-        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=None):
-            cmd_config_sync_remote(args)
-        out = capsys.readouterr().out
-        assert "synced" not in out and "up to date" not in out
-
     def test_skips_machine_with_no_colette_path(self, tmp_config, capsys):
         from colette_cli.utils.config import save_config
-        from colette_cli.config.commands import cmd_config_sync_remote
+        from colette_cli.config.commands import cmd_config_sync
         cfg = {
             "machines": {
                 "myremote": {
                     "type": "ssh",
                     "host": "user@remotehost",
-                    "projects_dir": "/home/user/projects",
                 }
             }
         }
         save_config(cfg)
         args = MagicMock(machine_name=None)
         with patch("colette_cli.utils.ssh.sync_remote_colette") as mock_sync:
-            cmd_config_sync_remote(args)
+            cmd_config_sync(args)
         mock_sync.assert_not_called()
         assert "no colette_path set" in capsys.readouterr().out
 
     def test_exits_when_named_machine_not_found(self, tmp_config):
         from colette_cli.utils.config import save_config
-        from colette_cli.config.commands import cmd_config_sync_remote
+        from colette_cli.config.commands import cmd_config_sync
         save_config(self._REMOTE_CFG)
         args = MagicMock(machine_name="ghost")
         with pytest.raises(SystemExit):
-            cmd_config_sync_remote(args)
+            cmd_config_sync(args)
 
-    def test_injects_project_config_for_each_project(self, tmp_config, capsys):
-        """sync-remote must call inject_project_config for each project on the machine."""
-        from colette_cli.utils.config import save_config, save_projects
-        from colette_cli.config.commands import cmd_config_sync_remote
+    def test_no_remote_machines_prints_message(self, tmp_config, capsys):
+        from colette_cli.utils.config import save_config
+        from colette_cli.config.commands import cmd_config_sync
+        save_config({"machines": {"local": make_local_machine()}, "default_machine": "local"})
+        args = MagicMock(machine_name=None)
+        cmd_config_sync(args)
+        assert "No remote machines configured" in capsys.readouterr().out
+
+    def test_caches_fetched_projects_and_templates(self, tmp_config):
+        """sync writes a read-only cache from the remote's self-report, and
+        never pushes anything back."""
+        from colette_cli.utils.config import save_config, load_machine_cache
+        from colette_cli.config.commands import cmd_config_sync
         save_config(self._REMOTE_CFG)
-        save_projects([
-            make_project("proj-a", machine="myremote"),
-            make_project("proj-b", machine="myremote"),
-        ])
         args = MagicMock(machine_name=None)
         with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True), \
-             patch("colette_cli.utils.ssh.inject_project_config") as mock_inject:
-            cmd_config_sync_remote(args)
-        assert mock_inject.call_count == 2
-        injected_names = {c[0][2]["name"] for c in mock_inject.call_args_list}
-        assert injected_names == {"proj-a", "proj-b"}
+             patch("colette_cli.utils.ssh.fetch_self_report", return_value=self._REPORT) as mock_report:
+            cmd_config_sync(args)
 
-    def test_does_not_inject_when_sync_fails(self, tmp_config):
-        """inject_project_config must not be called if sync_remote_colette returns None."""
-        from colette_cli.utils.config import save_config, save_projects
-        from colette_cli.config.commands import cmd_config_sync_remote
+        mock_report.assert_called_once()
+        cache = load_machine_cache("myremote")
+        assert cache["projects"] == self._REPORT["projects"]
+        assert cache["templates"] == self._REPORT["machine"]["templates"]
+        assert cache["projects_dir"] == "/home/user/projects"
+        assert "synced_at" in cache
+
+    def test_warns_when_self_report_fails(self, tmp_config, capsys):
+        from colette_cli.utils.config import save_config, load_machine_cache
+        from colette_cli.config.commands import cmd_config_sync
         save_config(self._REMOTE_CFG)
-        save_projects([make_project("proj-a", machine="myremote")])
         args = MagicMock(machine_name=None)
-        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=None), \
-             patch("colette_cli.utils.ssh.inject_project_config") as mock_inject:
-            cmd_config_sync_remote(args)
-        mock_inject.assert_not_called()
+        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True), \
+             patch("colette_cli.utils.ssh.fetch_self_report", return_value=None):
+            cmd_config_sync(args)
+        assert load_machine_cache("myremote") is None
 
 
 class TestCmdConfigAddTemplateProjectNameConflict:
     def test_errors_when_template_name_is_existing_project(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.config.commands import cmd_config_add_template
         save_config({
             "machines": {"local": {"type": "local", "templates": []}},
             "default_machine": "local",
         })
-        save_projects([{"name": "my-project", "machine": "local", "path": "/tmp/my-project"}])
+        save_local_projects([{"name": "my-project", "machine": "local", "path": "/tmp/my-project"}])
         args = MagicMock()
         args.machine_name = "local"
         args.template_name = "my-project"
@@ -418,7 +420,7 @@ class TestCmdConfigAddTemplateProjectNameConflict:
 
 class TestCmdConfigRenameTemplateProjectNameConflict:
     def test_errors_when_new_name_is_existing_project(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.config.commands import cmd_config_rename_template
         save_config({
             "machines": {
@@ -429,7 +431,7 @@ class TestCmdConfigRenameTemplateProjectNameConflict:
             },
             "default_machine": "local",
         })
-        save_projects([{"name": "existing-project", "machine": "local", "path": "/tmp/existing-project"}])
+        save_local_projects([{"name": "existing-project", "machine": "local", "path": "/tmp/existing-project"}])
         args = MagicMock()
         args.machine_name = "local"
         args.old_name = "old-tmpl"

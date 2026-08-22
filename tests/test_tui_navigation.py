@@ -180,12 +180,12 @@ class TestAppLoop:
         First entry is the startup splash (should be False); subsequent entries
         are quit-mode splash calls.
         """
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         save_config({
             "machines": {"local": {"type": "local", "projects_dir": "/tmp", "templates": []}},
             "default_machine": "local",
         })
-        save_projects(projects or [])
+        save_local_projects(projects or [])
 
         scr = _make_stdscr(keys)
         scr.timeout = MagicMock()
@@ -233,12 +233,12 @@ class TestAppLoop:
     ):
         """Like _run_with_keys but also mocks show_quit_confirm and state.running_tasks."""
         import colette_cli.tui.state as state
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         save_config({
             "machines": {"local": {"type": "local", "projects_dir": "/tmp", "templates": []}},
             "default_machine": "local",
         })
-        save_projects([])
+        save_local_projects([])
 
         orig_running = state.running_tasks
         state.running_tasks = running_tasks
@@ -280,12 +280,12 @@ class TestAppLoop:
              patch("curses.curs_set"), \
              patch("curses.use_default_colors"):
             import colette_cli.tui.state as state
-            from colette_cli.utils.config import save_config, save_projects
+            from colette_cli.utils.config import save_config, save_local_projects
             save_config({
                 "machines": {"local": {"type": "local", "projects_dir": "/tmp", "templates": []}},
                 "default_machine": "local",
             })
-            save_projects([])
+            save_local_projects([])
             orig = state.running_tasks
             state.running_tasks = 2
             try:
@@ -300,12 +300,12 @@ class TestAppLoop:
     def test_q_with_running_tasks_confirm_no_stays(self, tmp_config):
         """q + confirm n → stays in TUI; second q (no tasks) exits."""
         import colette_cli.tui.state as state
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         save_config({
             "machines": {"local": {"type": "local", "projects_dir": "/tmp", "templates": []}},
             "default_machine": "local",
         })
-        save_projects([])
+        save_local_projects([])
 
         confirm_calls = []
 
@@ -337,12 +337,12 @@ class TestAppLoop:
         """← at root while tasks run must prompt before the quit-mode splash."""
         import curses
         import colette_cli.tui.state as state
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         save_config({
             "machines": {"local": {"type": "local", "projects_dir": "/tmp", "templates": []}},
             "default_machine": "local",
         })
-        save_projects([])
+        save_local_projects([])
 
         orig = state.running_tasks
         state.running_tasks = 1
@@ -364,12 +364,12 @@ class TestAppLoop:
         """← at root + confirm n → stays, no quit-mode splash shown."""
         import curses
         import colette_cli.tui.state as state
-        from colette_cli.utils.config import save_config, save_projects
+        from colette_cli.utils.config import save_config, save_local_projects
         save_config({
             "machines": {"local": {"type": "local", "projects_dir": "/tmp", "templates": []}},
             "default_machine": "local",
         })
-        save_projects([])
+        save_local_projects([])
 
         orig = state.running_tasks
         state.running_tasks = 1

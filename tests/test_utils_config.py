@@ -21,19 +21,74 @@ class TestLoadSaveConfig:
         save_config(data)
         assert load_config() == data
 
-    def test_load_projects_missing_returns_empty(self, tmp_config):
-        from colette_cli.utils.config import load_projects
+    def test_load_local_projects_missing_returns_empty(self, tmp_config):
+        from colette_cli.utils.config import load_local_projects
 
-        assert load_projects() == []
+        assert load_local_projects() == []
 
-    def test_save_and_load_projects_roundtrip(self, tmp_config):
-        from colette_cli.utils.config import load_projects, save_projects
+    def test_save_and_load_local_projects_roundtrip(self, tmp_config):
+        from colette_cli.utils.config import load_local_projects, save_local_projects
 
         projects = [
             {"name": "p", "machine": "local", "path": "/tmp/p", "template": None}
         ]
-        save_projects(projects)
+        save_local_projects(projects)
+        assert load_local_projects() == projects
+
+    def test_load_projects_matches_local_when_no_remotes(self, tmp_config):
+        """With no remote machines configured, the merged view equals local projects."""
+        from colette_cli.utils.config import load_projects, save_local_projects
+
+        projects = [
+            {"name": "p", "machine": "local", "path": "/tmp/p", "template": None}
+        ]
+        save_local_projects(projects)
         assert load_projects() == projects
+
+    def test_load_projects_merges_remote_cache(self, tmp_config):
+        """load_projects() merges in cached remote projects, tagged _cached and
+        remapped to the controller's connection name for that machine."""
+        from colette_cli.utils.config import load_projects, save_config, save_local_projects, save_machine_cache
+
+        save_config({
+            "machines": {
+                "local": {"type": "local", "projects_dir": "/tmp"},
+                "myserver": {"type": "ssh", "host": "server", "colette_path": "/bin/colette"},
+            },
+            "default_machine": "local",
+        })
+        save_local_projects([{"name": "local-proj", "machine": "local", "path": "/tmp/local-proj", "template": None}])
+        save_machine_cache("myserver", {
+            "machine": "myserver",
+            "synced_at": "2026-01-01T00:00:00Z",
+            "projects_dir": "/home/user",
+            "templates": [],
+            "projects": [
+                {"name": "remote-proj", "machine": "local", "path": "/home/user/remote-proj", "template": None}
+            ],
+        })
+
+        projects = load_projects()
+        names = {p["name"] for p in projects}
+        assert names == {"local-proj", "remote-proj"}
+
+        remote = next(p for p in projects if p["name"] == "remote-proj")
+        assert remote["machine"] == "myserver"
+        assert remote["_cached"] is True
+        assert remote["_synced_at"] == "2026-01-01T00:00:00Z"
+
+        local = next(p for p in projects if p["name"] == "local-proj")
+        assert "_cached" not in local
+
+    def test_load_projects_ignores_cache_for_unconfigured_machine(self, tmp_config):
+        """A stray cache file for a machine no longer in config.json is ignored."""
+        from colette_cli.utils.config import load_projects, save_config, save_local_projects, save_machine_cache
+
+        save_config({"machines": {"local": {"type": "local", "projects_dir": "/tmp"}}, "default_machine": "local"})
+        save_local_projects([])
+        save_machine_cache("ghost", {"machine": "ghost", "synced_at": "x", "projects_dir": "", "templates": [], "projects": [{"name": "orphan", "machine": "local", "path": "/x", "template": None}]})
+
+        assert load_projects() == []
 
     def test_load_templates_missing_returns_defaults(self, tmp_config):
         from colette_cli.utils.config import load_templates
@@ -50,18 +105,62 @@ class TestLoadSaveConfig:
 
 class TestGetProject:
     def test_get_project_found(self, tmp_config):
-        from colette_cli.utils.config import get_project, save_projects
+        from colette_cli.utils.config import get_project, save_local_projects
 
-        save_projects(
+        save_local_projects(
             [{"name": "foo", "machine": "local", "path": "/p", "template": None}]
         )
         project = get_project("foo")
         assert project["name"] == "foo"
 
-    def test_get_project_not_found_returns_none(self, tmp_config):
+    def test_get_project_not_found_returns_none_with_no_remotes(self, tmp_config):
+        """With no remote machines configured, there's nothing to fall back to."""
         from colette_cli.utils.config import get_project
 
         assert get_project("missing") is None
+
+    def test_get_project_falls_back_to_live_ssh_check(self, tmp_config):
+        """A miss in the merged local+cache view triggers a live self-report
+        check against configured remote machines, and patches the cache."""
+        from unittest.mock import patch
+        from colette_cli.utils.config import get_project, load_machine_cache, save_config, save_local_projects
+
+        save_config({
+            "machines": {
+                "local": {"type": "local", "projects_dir": "/tmp"},
+                "myserver": {"type": "ssh", "host": "server", "colette_path": "/bin/colette"},
+            },
+            "default_machine": "local",
+        })
+        save_local_projects([])
+
+        report = {
+            "machine": {"projects_dir": "/home/user", "templates": []},
+            "projects": [{"name": "fresh-proj", "machine": "local", "path": "/home/user/fresh-proj", "template": None}],
+        }
+        with patch("colette_cli.utils.ssh.fetch_self_report", return_value=report):
+            project = get_project("fresh-proj")
+
+        assert project is not None
+        assert project["machine"] == "myserver"
+        assert project["_cached"] is True
+
+        cache = load_machine_cache("myserver")
+        assert cache["projects"] == report["projects"]
+
+    def test_get_project_returns_none_when_remote_check_also_misses(self, tmp_config):
+        from unittest.mock import patch
+        from colette_cli.utils.config import get_project, save_config, save_local_projects
+
+        save_config({
+            "machines": {"myserver": {"type": "ssh", "host": "server", "colette_path": "/bin/colette"}},
+            "default_machine": "myserver",
+        })
+        save_local_projects([])
+
+        report = {"machine": {"projects_dir": "/home/user", "templates": []}, "projects": []}
+        with patch("colette_cli.utils.ssh.fetch_self_report", return_value=report):
+            assert get_project("missing") is None
 
 
 class TestGetMachine:

@@ -14,6 +14,9 @@ from argparse import Namespace
 
 from colette_cli.template import SCRIPT_KEYS
 from colette_cli.utils.config import (
+    DEFAULT_AGENT_COMMAND,
+    DEFAULT_IDE_COMMAND_LOCAL,
+    DEFAULT_IDE_COMMAND_REMOTE,
     get_machine_template_hook_path,
     get_project_hook_path,
     load_config,
@@ -21,7 +24,6 @@ from colette_cli.utils.config import (
     clear_hook_failures,
     load_projects,
     save_config,
-    save_projects,
     scaffold_project_hook_files,
 )
 from colette_cli.template import (
@@ -31,7 +33,7 @@ from colette_cli.template import (
     normalize_machine_templates,
     scaffold_template_hook_files,
 )
-from colette_cli.utils.helpers import all_template_names, is_remote_machine
+from colette_cli.utils.helpers import all_template_names, is_remote_machine, resolve_ide_command
 from colette_cli.utils.tmux import local_tmux_session
 from colette_cli.template import build_project_bootstrap
 
@@ -479,7 +481,8 @@ def _unlink_interactive(name, project):
         default=False,
     ):
         return
-    save_projects([p for p in load_projects() if p["name"] != name])
+    from colette_cli.project.commands import cmd_unlink
+    cmd_unlink(Namespace(name=name), skip_confirmation=True)
 
 
 # ---------------------------------------------------------------------------
@@ -487,14 +490,14 @@ def _unlink_interactive(name, project):
 # ---------------------------------------------------------------------------
 
 def main_menu_items():
-    def _run_monitor(copilot=False, all=False):
+    def _run_monitor(agent=False, all=False):
         from colette_cli.session import cmd_monitor
-        cmd_monitor(Namespace(machine=None, projects=[], copilot=copilot, all=all))
+        cmd_monitor(Namespace(machine=None, projects=[], agent=agent, all=all))
 
     def _monitor_items():
         return [
             MenuItem("Standard", action=_suspend(lambda: _run_monitor())),
-            MenuItem("Copilot", action=_suspend(lambda: _run_monitor(copilot=True))),
+            MenuItem("Agent", action=_suspend(lambda: _run_monitor(agent=True))),
             MenuItem("All", action=_suspend(lambda: _run_monitor(all=True))),
         ]
 
@@ -643,7 +646,7 @@ def project_action_items(project):
             template_name = get_project_template_name(project)
             template_metadata = get_template_metadata(machine, project["machine"], template_name)
             startup_command = build_project_bootstrap(
-                project, project["machine"], template_metadata, is_remote=True
+                project, project["machine"], template_metadata, is_remote=True, machine=machine
             )
             tmux_cmd = (
                 f"tmux new-session -A -s {shlex.quote(name)} "
@@ -672,18 +675,14 @@ def project_action_items(project):
         from colette_cli.session import cmd_update
         _async_popup(cmd_update, f"Update {name}")(Namespace(machine=None, projects=[name]))
 
-    def _open_code():
-        if is_remote:
-            host = machine.get("host", "")
-            uri = f"vscode-remote://ssh-remote+{host}{project['path']}"
-            subprocess.Popen(["code", "--folder-uri", uri])
-        else:
-            subprocess.Popen(["code", str(Path(project["path"]).expanduser())])
+    def _open_ide():
+        path = project["path"] if is_remote else str(Path(project["path"]).expanduser())
+        subprocess.Popen(resolve_ide_command(machine, path))
 
-    def _open_copilot():
-        from colette_cli.project.commands import _open_copilot_session
+    def _open_agent():
+        from colette_cli.project.commands import _open_agent_session
         project_path = project["path"] if is_remote else str(Path(project["path"]).expanduser())
-        _open_copilot_session(name, project_path, machine=machine, is_remote=is_remote)
+        _open_agent_session(name, project_path, machine=machine, is_remote=is_remote)
 
     def _open_logs():
         from colette_cli.session import cmd_logs
@@ -691,7 +690,7 @@ def project_action_items(project):
 
     def _monitor_all():
         from colette_cli.session import cmd_monitor
-        cmd_monitor(Namespace(machine=None, projects=[name], copilot=False, all=True))
+        cmd_monitor(Namespace(machine=None, projects=[name], agent=False, all=True))
 
     def _delete():
         from .forms import confirm, type_to_confirm
@@ -706,8 +705,8 @@ def project_action_items(project):
 
     return [
         MenuItem("Open session", action=_suspend(_open_session)),
-        MenuItem("Code", action=_open_code),
-        MenuItem("Copilot", action=_suspend(_open_copilot)),
+        MenuItem("IDE", action=_open_ide),
+        MenuItem("Agent", action=_suspend(_open_agent)),
         MenuItem("Logs", action=_suspend(_open_logs)),
         MenuItem("Monitor", action=_suspend(_monitor_all)),
         MenuItem("Start", action=_start),
@@ -988,6 +987,45 @@ def machine_action_items(machine_name):
         cfg["machines"][machine_name] = machine
         save_config(cfg)
 
+    def _set_agent_command():
+        from .forms import ask
+        cfg = load_config()
+        machine = cfg.get("machines", {}).get(machine_name) or {}
+        current = machine.get("agent_command", "")
+        new_val = ask(
+            f"Agent command (empty to reset to default: {DEFAULT_AGENT_COMMAND})",
+            default=current,
+        )
+        if new_val is None:
+            return
+        new_val = new_val.strip()
+        if new_val:
+            machine["agent_command"] = new_val
+        else:
+            machine.pop("agent_command", None)
+        cfg["machines"][machine_name] = machine
+        save_config(cfg)
+
+    def _set_ide_command():
+        from .forms import ask
+        cfg = load_config()
+        machine = cfg.get("machines", {}).get(machine_name) or {}
+        default_ide = DEFAULT_IDE_COMMAND_REMOTE if is_remote_machine(machine) else DEFAULT_IDE_COMMAND_LOCAL
+        current = machine.get("ide_command", "")
+        new_val = ask(
+            f"IDE command (empty to reset to default: {default_ide}; supports {{host}}/{{path}})",
+            default=current,
+        )
+        if new_val is None:
+            return
+        new_val = new_val.strip()
+        if new_val:
+            machine["ide_command"] = new_val
+        else:
+            machine.pop("ide_command", None)
+        cfg["machines"][machine_name] = machine
+        save_config(cfg)
+
     def _sync_colette():
         from colette_cli.utils.ssh import sync_remote_colette
         cfg = load_config()
@@ -1002,16 +1040,30 @@ def machine_action_items(machine_name):
             result = sync_remote_colette(machine, machine_name)
             if result is None:
                 raise RuntimeError(f"sync failed for '{machine_name}'")
-            from colette_cli.utils.ssh import inject_project_config
-            from colette_cli.utils.config import load_projects
-            for project in [p for p in load_projects() if p.get("machine") == machine_name]:
-                inject_project_config(machine, machine_name, project)
+            from datetime import datetime, timezone
+
+            from colette_cli.utils.config import save_machine_cache
+            from colette_cli.utils.ssh import fetch_self_report
+
+            report = fetch_self_report(machine, machine_name)
+            if report is None:
+                raise RuntimeError(f"failed to fetch project/template data from '{machine_name}'")
+            cache_data = {
+                "machine": machine_name,
+                "synced_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "projects_dir": report.get("machine", {}).get("projects_dir", ""),
+                "templates": report.get("machine", {}).get("templates", []),
+                "projects": report.get("projects", []),
+            }
+            save_machine_cache(machine_name, cache_data)
 
         _async_popup(_do_sync, f"Sync colette → {machine_name}")()
 
     items = [
         MenuItem("Edit", action=lambda: _edit_machine_interactive(machine_name)),
         MenuItem("Set as default", action=_set_default),
+        MenuItem("Set agent command", action=_set_agent_command),
+        MenuItem("Set IDE command", action=_set_ide_command),
     ]
     if _is_remote:
         items += [

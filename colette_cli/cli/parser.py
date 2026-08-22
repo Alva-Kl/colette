@@ -118,11 +118,13 @@ def build_parser():
     sdp = csub.add_parser("set-default", help="Set the default machine")
     sdp.add_argument("machine_name", help="Machine name")
     srp = csub.add_parser(
-        "sync-remote",
-        help="Sync the local colette binary to a remote machine",
+        "sync",
+        help="Sync the local colette binary and pull a read-only project/template cache from a remote machine",
         description=(
             "Copies the local colette binary to the path configured in 'colette_path'\n"
-            "on one or all remote machines. Skips machines without 'colette_path' set.\n\n"
+            "on one or all remote machines (skips machines without 'colette_path' set),\n"
+            "then fetches each remote machine's own project/template data over SSH and\n"
+            "caches it locally (read-only — never authoritative, never pushed back).\n\n"
             "Set 'colette_path' when adding or editing a machine:\n"
             "  colette config edit-machine <name>"
         ),
@@ -185,14 +187,14 @@ def build_parser():
     atp = sub.add_parser("attach", help="Attach to or create project tmux session")
     atp.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
 
-    cop = sub.add_parser("code", help="Open project in VS Code (local or SSH)")
-    cop.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
+    idp = sub.add_parser("ide", help="Open project in the configured IDE (local or SSH)")
+    idp.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
 
-    copp = sub.add_parser(
-        "copilot",
-        help="Open project in GitHub Copilot in a dedicated tmux session",
+    agp = sub.add_parser(
+        "agent",
+        help="Open project in the configured agent in a dedicated tmux session",
     )
-    copp.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
+    agp.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
 
     monp = sub.add_parser(
         "monitor",
@@ -213,17 +215,17 @@ def build_parser():
     monp.add_argument("projects", nargs="*", help="Optional project names")
     mon_mode = monp.add_mutually_exclusive_group()
     mon_mode.add_argument(
-        "--copilot",
+        "--agent",
         action="store_true",
         default=False,
-        help="Monitor active Copilot sessions (<project>-copilot) instead of standard sessions",
+        help="Monitor active agent sessions (<project>-agent) instead of standard sessions",
     )
     mon_mode.add_argument(
         "--all",
         action="store_true",
         default=False,
         help=(
-            "Monitor all active sessions (standard, copilot, logs) "
+            "Monitor all active sessions (standard, agent, logs) "
             "with one row per project"
         ),
     )
@@ -342,5 +344,9 @@ def build_parser():
         action="store_true",
         help="Clear the hook failure log",
     )
+
+    # Internal — invoked by `colette config sync` over SSH, not meant for
+    # interactive use (dumps this machine's own projects/templates as JSON).
+    dbgsub.add_parser("self-report", help="(internal) dump this machine's own projects/templates as JSON")
 
     return parser, sub.choices

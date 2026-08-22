@@ -30,7 +30,7 @@ from colette_cli.utils.tmux import (
 )
 
 # Suffixes appended to the project name to form all session names.
-PROJECT_SESSION_SUFFIXES = ("", "-copilot", "-logs")
+PROJECT_SESSION_SUFFIXES = ("", "-agent", "-logs")
 
 
 def _build_ssh_attach_command(machine, session_name) -> str:
@@ -69,7 +69,7 @@ def cmd_start(args):
                 project,
                 machine,
                 is_remote,
-                build_project_bootstrap(project, machine_name, template_metadata, is_remote),
+                build_project_bootstrap(project, machine_name, template_metadata, is_remote, machine=machine),
             )
             run_template_hook(
                 project,
@@ -202,7 +202,7 @@ def cmd_monitor(args):
 
     filter_machine = getattr(args, "machine", None)
     filter_projects = getattr(args, "projects", None) or []
-    mode_copilot = getattr(args, "copilot", False)
+    mode_agent = getattr(args, "agent", False)
     mode_all = getattr(args, "all", False)
 
     by_machine = build_projects_by_machine(projects, filter_machine)
@@ -221,8 +221,8 @@ def cmd_monitor(args):
 
     if mode_all:
         _cmd_monitor_all(by_machine, cfg, filter_projects, monitor_attach_wrapper)
-    elif mode_copilot:
-        _cmd_monitor_copilot(by_machine, cfg, filter_projects, monitor_attach_wrapper)
+    elif mode_agent:
+        _cmd_monitor_agent(by_machine, cfg, filter_projects, monitor_attach_wrapper)
     else:
         _cmd_monitor_standard(by_machine, cfg, filter_projects, monitor_attach_wrapper)
 
@@ -260,13 +260,13 @@ def _cmd_monitor_standard(by_machine, cfg, filter_projects, wrap):
     create_tmux_window_with_panes("colette-monitor", active, replace_existing=True)
 
 
-def _cmd_monitor_copilot(by_machine, cfg, filter_projects, wrap):
-    """Monitor mode: <project>-copilot sessions."""
+def _cmd_monitor_agent(by_machine, cfg, filter_projects, wrap):
+    """Monitor mode: <project>-agent sessions."""
     active = _collect_monitor_panes(
-        by_machine, cfg, filter_projects, wrap, lambda p: f"{p['name']}-copilot"
+        by_machine, cfg, filter_projects, wrap, lambda p: f"{p['name']}-agent"
     )
     if not active:
-        err("no active copilot sessions to monitor.")
+        err("no active agent sessions to monitor.")
     create_tmux_window_with_panes("colette-monitor", active, replace_existing=True)
 
 
@@ -281,7 +281,7 @@ def _cmd_monitor_all(by_machine, cfg, filter_projects, wrap):
         for project in sorted(machine_projects, key=lambda x: x["name"]):
             pname = project["name"]
             row_sessions = []
-            for label, suffix in [("standard", ""), ("copilot", "-copilot"), ("logs", "-logs")]:
+            for label, suffix in [("standard", ""), ("agent", "-agent"), ("logs", "-logs")]:
                 session_name = f"{pname}{suffix}"
                 if session_name not in all_sessions:
                     continue
