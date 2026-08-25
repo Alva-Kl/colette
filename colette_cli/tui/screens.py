@@ -670,6 +670,21 @@ def project_list_items():
                     children=lambda p=project: project_action_items(p),
                 ))
 
+            machine_cfg = cfg.get("machines", {}).get(machine_name) or {}
+            is_remote = is_remote_machine(machine_cfg)
+
+            items.append(MenuItem("    " + "─" * 12, selectable=False))
+
+            def _terminal_machine(mn=machine_name):
+                from colette_cli.project import cmd_attach
+                _suspend(lambda: cmd_attach(Namespace(name=mn)))()
+
+            def _sync_machine(mn=machine_name):
+                from colette_cli.config import cmd_config_sync
+                _async_popup(
+                    lambda: cmd_config_sync(Namespace(machine_name=mn)), f"Sync {mn}"
+                )()
+
             def _start_machine(mn=machine_name):
                 from colette_cli.session import cmd_start
                 _async_popup(cmd_start, f"Start {mn}")(Namespace(machine=mn, projects=[]))
@@ -682,6 +697,9 @@ def project_list_items():
                 from colette_cli.session import cmd_update
                 _async_popup(cmd_update, f"Update {mn}")(Namespace(machine=mn, projects=[]))
 
+            items.append(MenuItem(f"Terminal — {machine_name}", action=_terminal_machine))
+            if is_remote:
+                items.append(MenuItem(f"Sync — {machine_name}", action=_sync_machine))
             items.append(MenuItem(f"Start All — {machine_name}", action=_start_machine))
             items.append(MenuItem(f"Stop All — {machine_name}", action=_stop_machine))
             items.append(MenuItem(f"Update All — {machine_name}", action=_update_machine))

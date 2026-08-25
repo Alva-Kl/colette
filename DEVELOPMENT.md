@@ -583,6 +583,13 @@ against the current working tree, including uncommitted changes — no image
 rebuild needed between runs. See `sandbox/README.md` for the full sandbox
 setup (also used for real end-to-end TUI testing, not just unit tests).
 
+Bring the sandbox container back down once you're done testing, rather than
+leaving it running:
+
+```bash
+docker compose -f sandbox/docker-compose.yml down
+```
+
 `pyproject.toml` defines project metadata and the `colette` entry-point script.
 `requirements-dev.txt` lists development-only dependencies (pytest).
 

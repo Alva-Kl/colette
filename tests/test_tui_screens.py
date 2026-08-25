@@ -228,6 +228,73 @@ class TestProjectListItems:
         assert mock_update.call_args[0][0].machine == "local"
         assert mock_update.call_args[0][0].projects == []
 
+    def test_per_machine_terminal_calls_cmd_attach(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_local_projects
+        save_config(LOCAL_CFG)
+        save_local_projects([make_project("proj")])
+        with patch("colette_cli.project.cmd_attach") as mock_attach, \
+             patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
+            from colette_cli.tui.screens import project_list_items
+            items = project_list_items()
+            next(i for i in items if i.label == "Terminal — local").run()
+        mock_attach.assert_called_once()
+        assert mock_attach.call_args[0][0].name == "local"
+
+    def test_per_machine_sync_shown_only_for_remote(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_local_projects
+        cfg = {
+            "machines": {
+                "local": make_local_machine("/tmp/projects"),
+                "remote": {"type": "ssh", "host": "user@host", "templates": []},
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        save_local_projects([
+            make_project("local-proj", machine="local"),
+            make_project("remote-proj", machine="remote", path="/tmp/projects/remote-proj"),
+        ])
+        from colette_cli.tui.screens import project_list_items
+        labels = _item_labels(project_list_items())
+        assert "Terminal — local" in labels
+        assert "Terminal — remote" in labels
+        assert "Sync — remote" in labels
+        assert "Sync — local" not in labels
+
+    def test_per_machine_sync_calls_cmd_config_sync(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_local_projects
+        cfg = {
+            "machines": {
+                "remote": {"type": "ssh", "host": "user@host", "templates": []},
+            },
+            "default_machine": "remote",
+        }
+        save_config(cfg)
+        save_local_projects([make_project("proj", machine="remote", path="/tmp/projects/proj")])
+        with patch("colette_cli.config.cmd_config_sync") as mock_sync, \
+             patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
+            from colette_cli.tui.screens import project_list_items
+            items = project_list_items()
+            next(i for i in items if i.label == "Sync — remote").run()
+        mock_sync.assert_called_once()
+        assert mock_sync.call_args[0][0].machine_name == "remote"
+
+    def test_per_machine_separator_present(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_local_projects
+        save_config(LOCAL_CFG)
+        save_local_projects([make_project("proj")])
+        from colette_cli.tui.screens import project_list_items
+        items = project_list_items()
+        separator_label = "    " + "─" * 12
+        sep_items = [i for i in items if i.label == separator_label]
+        assert len(sep_items) == 1
+        assert sep_items[0].selectable is False
+        labels = _item_labels(items)
+        proj_idx = labels.index("proj")
+        sep_idx = labels.index(separator_label)
+        terminal_idx = labels.index("Terminal — local")
+        assert proj_idx < sep_idx < terminal_idx
+
     def test_create_project_calls_cmd_create(self, tmp_config):
         from colette_cli.utils.config import save_config
         save_config(LOCAL_CFG)
