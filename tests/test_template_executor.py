@@ -44,11 +44,11 @@ class TestResolveHookWithSuper:
         assert "echo proj" in content
 
     def test_super_path_set_when_template_hook_exists(self, tmp_config):
-        from colette_cli.utils.config import write_project_hook, write_template_hook
+        from colette_cli.utils.config import write_project_hook, write_machine_template_hook
         from colette_cli.template.executor import _resolve_hook_with_super
         write_project_hook("proj", "onstart", "#!/usr/bin/env bash\necho proj")
-        write_template_hook("tmpl", "onstart", "#!/usr/bin/env bash\necho tmpl")
-        _content, super_path = _resolve_hook_with_super("proj", "tmpl", "onstart")
+        write_machine_template_hook("local", "tmpl", "onstart", "#!/usr/bin/env bash\necho tmpl")
+        _content, super_path = _resolve_hook_with_super("proj", "tmpl", "onstart", machine_name="local")
         assert super_path is not None
         assert "tmpl" in str(super_path)
         assert "onstart" in str(super_path)
@@ -57,42 +57,42 @@ class TestResolveHookWithSuper:
         from colette_cli.utils.config import write_project_hook
         from colette_cli.template.executor import _resolve_hook_with_super
         write_project_hook("proj", "onstart", "#!/usr/bin/env bash\necho proj")
-        _content, super_path = _resolve_hook_with_super("proj", "tmpl", "onstart")
+        _content, super_path = _resolve_hook_with_super("proj", "tmpl", "onstart", machine_name="local")
         assert super_path is None
 
     def test_no_super_path_when_using_template_hook(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import _resolve_hook_with_super
-        write_template_hook("tmpl", "onstart", "#!/usr/bin/env bash\necho tmpl")
-        _content, super_path = _resolve_hook_with_super("proj", "tmpl", "onstart")
+        write_machine_template_hook("local", "tmpl", "onstart", "#!/usr/bin/env bash\necho tmpl")
+        _content, super_path = _resolve_hook_with_super("proj", "tmpl", "onstart", machine_name="local")
         assert super_path is None
 
     def test_falls_back_to_template_hook(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import _resolve_hook_with_super
-        write_template_hook("tmpl", "onstart", "#!/usr/bin/env bash\necho tmpl")
-        content, _ = _resolve_hook_with_super("proj", "tmpl", "onstart")
+        write_machine_template_hook("local", "tmpl", "onstart", "#!/usr/bin/env bash\necho tmpl")
+        content, _ = _resolve_hook_with_super("proj", "tmpl", "onstart", machine_name="local")
         assert "echo tmpl" in content
 
     def test_returns_none_when_no_hook(self, tmp_config):
         from colette_cli.template.executor import _resolve_hook_with_super
-        content, super_path = _resolve_hook_with_super("proj", "tmpl", "onstart")
+        content, super_path = _resolve_hook_with_super("proj", "tmpl", "onstart", machine_name="local")
         assert content is None
         assert super_path is None
 
     def test_project_hook_takes_precedence(self, tmp_config):
-        from colette_cli.utils.config import write_project_hook, write_template_hook
+        from colette_cli.utils.config import write_project_hook, write_machine_template_hook
         from colette_cli.template.executor import _resolve_hook_with_super
         write_project_hook("proj", "onstart", "#!/usr/bin/env bash\necho project")
-        write_template_hook("tmpl", "onstart", "#!/usr/bin/env bash\necho template")
-        content, _ = _resolve_hook_with_super("proj", "tmpl", "onstart")
+        write_machine_template_hook("local", "tmpl", "onstart", "#!/usr/bin/env bash\necho template")
+        content, _ = _resolve_hook_with_super("proj", "tmpl", "onstart", machine_name="local")
         assert "project" in content
 
     def test_ineffective_hook_returns_none(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import _resolve_hook_with_super
-        write_template_hook("tmpl", "onstart", "#!/usr/bin/env bash\n# empty\n")
-        content, _ = _resolve_hook_with_super("proj", "tmpl", "onstart")
+        write_machine_template_hook("local", "tmpl", "onstart", "#!/usr/bin/env bash\n# empty\n")
+        content, _ = _resolve_hook_with_super("proj", "tmpl", "onstart", machine_name="local")
         assert content is None
 
 
@@ -105,20 +105,20 @@ class TestPrependColetterc:
         assert result == "echo hook"
 
     def test_prepends_template_coletterc(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import _prepend_coletterc
-        write_template_hook("tmpl", "coletterc", "export MYVAR=1\n")
-        result = _prepend_coletterc("proj", "tmpl", "echo hook")
+        write_machine_template_hook("local", "tmpl", "coletterc", "export MYVAR=1\n")
+        result = _prepend_coletterc("proj", "tmpl", "echo hook", machine_name="local")
         assert "MYVAR=1" in result
         assert "echo hook" in result
         assert result.index("MYVAR=1") < result.index("echo hook")
 
     def test_prepends_project_coletterc_with_super(self, tmp_config):
-        from colette_cli.utils.config import write_project_hook, write_template_hook
+        from colette_cli.utils.config import write_project_hook, write_machine_template_hook
         from colette_cli.template.executor import _prepend_coletterc
         write_project_hook("proj", "coletterc", "export PROJ_VAR=1\n")
-        write_template_hook("tmpl", "coletterc", "export TMPL_VAR=1\n")
-        result = _prepend_coletterc("proj", "tmpl", "echo hook")
+        write_machine_template_hook("local", "tmpl", "coletterc", "export TMPL_VAR=1\n")
+        result = _prepend_coletterc("proj", "tmpl", "echo hook", machine_name="local")
         assert "PROJ_VAR=1" in result
         assert "SUPER=" in result
         assert "tmpl" in result
@@ -132,20 +132,20 @@ class TestBuildProjectBootstrap:
         assert result == "exec bash"
 
     def test_uses_rcfile_when_template_coletterc_present(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import build_project_bootstrap
-        write_template_hook("t", "coletterc", "export FOO=bar\n")
+        write_machine_template_hook("local", "t", "coletterc", "export FOO=bar\n")
         project = {"name": "p", "path": "/p", "machine": "local", "template": "t"}
         result = build_project_bootstrap(project, "local", {"name": "t"})
         assert "--rcfile" in result
         assert "base64" in result
 
     def test_uses_project_coletterc_over_template(self, tmp_config):
-        from colette_cli.utils.config import write_project_hook, write_template_hook
+        from colette_cli.utils.config import write_project_hook, write_machine_template_hook
         from colette_cli.template.executor import build_project_bootstrap
         import base64
         write_project_hook("p", "coletterc", "export PROJ=yes\n")
-        write_template_hook("t", "coletterc", "export TMPL=yes\n")
+        write_machine_template_hook("local", "t", "coletterc", "export TMPL=yes\n")
         project = {"name": "p", "path": "/p", "machine": "local", "template": "t"}
         result = build_project_bootstrap(project, "local", {"name": "t"})
         # Decode the embedded base64 to verify content
@@ -155,10 +155,10 @@ class TestBuildProjectBootstrap:
         assert "SUPER=" in decoded
 
     def test_sources_bashrc_in_rcfile(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import build_project_bootstrap
         import base64
-        write_template_hook("t", "coletterc", "export FOO=bar\n")
+        write_machine_template_hook("local", "t", "coletterc", "export FOO=bar\n")
         project = {"name": "p", "path": "/p", "machine": "local", "template": "t"}
         result = build_project_bootstrap(project, "local", {"name": "t"})
         b64_part = result.split("echo ")[1].split(" |")[0].strip("'\"")
@@ -176,27 +176,27 @@ class TestRunTemplateHook:
         assert result is True
 
     def test_runs_local_hook_successfully(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
-        write_template_hook("t", "onstart", "#!/usr/bin/env bash\nexit 0")
+        write_machine_template_hook("local", "t", "onstart", "#!/usr/bin/env bash\nexit 0")
         project = {"name": "proj", "path": "/tmp", "machine": "local", "template": "t"}
         metadata = {"name": "t"}
         result = run_template_hook(project, {}, "local", False, metadata, "onstart")
         assert result is True
 
     def test_failed_hook_returns_false_by_default(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
-        write_template_hook("t", "onstart", "#!/usr/bin/env bash\nexit 1")
+        write_machine_template_hook("local", "t", "onstart", "#!/usr/bin/env bash\nexit 1")
         project = {"name": "proj", "path": "/tmp", "machine": "local", "template": "t"}
         metadata = {"name": "t"}
         result = run_template_hook(project, {}, "local", False, metadata, "onstart", fail_on_error=False)
         assert result is False
 
     def test_failed_hook_exits_when_fail_on_error(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
-        write_template_hook("t", "oncreate", "#!/usr/bin/env bash\nexit 42")
+        write_machine_template_hook("local", "t", "oncreate", "#!/usr/bin/env bash\nexit 42")
         project = {"name": "proj", "path": "/tmp", "machine": "local", "template": "t"}
         metadata = {"name": "t"}
         with pytest.raises(SystemExit):
@@ -204,10 +204,10 @@ class TestRunTemplateHook:
 
     def test_echo_hook_writes_marker_file(self, tmp_config, tmp_path):
         """An echo hook actually executes: its output reaches the filesystem."""
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
         marker = tmp_path / "marker.txt"
-        write_template_hook("t", "onstart", f"#!/usr/bin/env bash\necho ran > {marker}")
+        write_machine_template_hook("local", "t", "onstart", f"#!/usr/bin/env bash\necho ran > {marker}")
         project = {"name": "proj", "path": str(tmp_path), "machine": "local", "template": "t"}
         metadata = {"name": "t"}
         result = run_template_hook(project, {}, "local", False, metadata, "onstart")
@@ -216,11 +216,11 @@ class TestRunTemplateHook:
 
     def test_coletterc_runs_before_hook(self, tmp_config, tmp_path):
         """coletterc is sourced before the hook script."""
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
         marker = tmp_path / "order.txt"
-        write_template_hook("t", "coletterc", "export COLETTERC_RAN=1\n")
-        write_template_hook(
+        write_machine_template_hook("local", "t", "coletterc", "export COLETTERC_RAN=1\n")
+        write_machine_template_hook("local", 
             "t", "onstart",
             f"#!/usr/bin/env bash\necho $COLETTERC_RAN > {marker}"
         )
@@ -230,10 +230,10 @@ class TestRunTemplateHook:
 
     def test_super_is_set_for_project_level_hook(self, tmp_config, tmp_path):
         """$SUPER points to the template hook when a project hook overrides it."""
-        from colette_cli.utils.config import write_project_hook, write_template_hook
+        from colette_cli.utils.config import write_project_hook, write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
         marker = tmp_path / "super.txt"
-        write_template_hook("t", "onstart", "#!/usr/bin/env bash\necho template")
+        write_machine_template_hook("local", "t", "onstart", "#!/usr/bin/env bash\necho template")
         write_project_hook(
             "proj", "onstart",
             f"#!/usr/bin/env bash\necho $SUPER > {marker}"
@@ -252,9 +252,9 @@ class TestBuildHookCommand:
         assert build_hook_command(project, "local", None, {}, "onlogs") is None
 
     def test_returns_shell_command_when_hook_present(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import build_hook_command
-        write_template_hook("t", "onlogs", "#!/usr/bin/env bash\ntail -f log")
+        write_machine_template_hook("local", "t", "onlogs", "#!/usr/bin/env bash\ntail -f log")
         project = {"name": "proj", "path": "/tmp", "machine": "local", "template": "t"}
         metadata = {"name": "t"}
         cmd = build_hook_command(project, "local", metadata, {}, "onlogs")
@@ -263,19 +263,19 @@ class TestBuildHookCommand:
         assert "COLETTE_PROJECT_NAME" in cmd
 
     def test_coletterc_included_in_hook_command(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import build_hook_command
-        write_template_hook("t", "coletterc", "export MYENV=1\n")
-        write_template_hook("t", "onlogs", "#!/usr/bin/env bash\ntail -f log")
+        write_machine_template_hook("local", "t", "coletterc", "export MYENV=1\n")
+        write_machine_template_hook("local", "t", "onlogs", "#!/usr/bin/env bash\ntail -f log")
         project = {"name": "proj", "path": "/tmp", "machine": "local", "template": "t"}
         metadata = {"name": "t"}
         cmd = build_hook_command(project, "local", metadata, {}, "onlogs")
         assert "MYENV=1" in cmd
 
     def test_super_included_in_hook_command_for_project_override(self, tmp_config):
-        from colette_cli.utils.config import write_project_hook, write_template_hook
+        from colette_cli.utils.config import write_project_hook, write_machine_template_hook
         from colette_cli.template.executor import build_hook_command
-        write_template_hook("t", "onlogs", "#!/usr/bin/env bash\ntail -f template.log")
+        write_machine_template_hook("local", "t", "onlogs", "#!/usr/bin/env bash\ntail -f template.log")
         write_project_hook("proj", "onlogs", "#!/usr/bin/env bash\ntail -f proj.log")
         project = {"name": "proj", "path": "/tmp", "machine": "local", "template": "t"}
         metadata = {"name": "t"}
@@ -283,18 +283,18 @@ class TestBuildHookCommand:
         assert "SUPER=" in cmd
 
     def test_no_super_in_command_for_template_level_hook(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import build_hook_command
-        write_template_hook("t", "onlogs", "#!/usr/bin/env bash\ntail -f log")
+        write_machine_template_hook("local", "t", "onlogs", "#!/usr/bin/env bash\ntail -f log")
         project = {"name": "proj", "path": "/tmp", "machine": "local", "template": "t"}
         metadata = {"name": "t"}
         cmd = build_hook_command(project, "local", metadata, {}, "onlogs")
         assert "SUPER=" not in cmd
 
     def test_template_params_in_hook_command(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import build_hook_command
-        write_template_hook("t", "onlogs", "#!/usr/bin/env bash\ntail -f log")
+        write_machine_template_hook("local", "t", "onlogs", "#!/usr/bin/env bash\ntail -f log")
         project = {"name": "proj", "path": "/tmp", "machine": "local", "template": "t"}
         metadata = {"name": "t", "params": {"PORT": "8080", "ENV": "dev"}}
         cmd = build_hook_command(project, "local", metadata, {}, "onlogs")
@@ -370,11 +370,11 @@ class TestResolveHookWithSuperEdgeCases:
         assert super_path is None
 
     def test_coletterc_resolution_project_over_template(self, tmp_config):
-        from colette_cli.utils.config import write_project_hook, write_template_hook
+        from colette_cli.utils.config import write_project_hook, write_machine_template_hook
         from colette_cli.template.executor import _resolve_hook_with_super
         write_project_hook("proj", "coletterc", "export PROJ_RC=1\n")
-        write_template_hook("t", "coletterc", "export TMPL_RC=1\n")
-        content, super_path = _resolve_hook_with_super("proj", "t", "coletterc")
+        write_machine_template_hook("local", "t", "coletterc", "export TMPL_RC=1\n")
+        content, super_path = _resolve_hook_with_super("proj", "t", "coletterc", machine_name="local")
         assert "PROJ_RC=1" in content
         assert super_path is not None
         assert "coletterc" in str(super_path)
@@ -389,20 +389,20 @@ class TestPrependColetterrcEdgeCases:
         assert result == "echo hook"
 
     def test_coletterc_content_appears_before_hook(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import _prepend_coletterc
-        write_template_hook("t", "coletterc", "export SETUP=done\n")
-        result = _prepend_coletterc("proj", "t", "run_hook")
+        write_machine_template_hook("local", "t", "coletterc", "export SETUP=done\n")
+        result = _prepend_coletterc("proj", "t", "run_hook", machine_name="local")
         lines = result.splitlines()
         setup_idx = next(i for i, l in enumerate(lines) if "SETUP=done" in l)
         hook_idx = next(i for i, l in enumerate(lines) if "run_hook" in l)
         assert setup_idx < hook_idx
 
     def test_no_super_line_when_using_template_coletterc(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import _prepend_coletterc
-        write_template_hook("t", "coletterc", "export VAR=1\n")
-        result = _prepend_coletterc("proj", "t", "echo hook")
+        write_machine_template_hook("local", "t", "coletterc", "export VAR=1\n")
+        result = _prepend_coletterc("proj", "t", "echo hook", machine_name="local")
         assert "SUPER=" not in result
 
 
@@ -422,18 +422,18 @@ class TestBuildProjectBootstrapEdgeCases:
         assert result == "exec bash"
 
     def test_bootstrap_starts_with_exec_bash_rcfile(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import build_project_bootstrap
-        write_template_hook("t", "coletterc", "source venv/bin/activate\n")
+        write_machine_template_hook("local", "t", "coletterc", "source venv/bin/activate\n")
         project = {"name": "p", "path": "/p", "machine": "local", "template": "t"}
         result = build_project_bootstrap(project, "local", {"name": "t"})
         assert result.startswith("exec bash --rcfile")
 
     def test_no_super_in_rcfile_when_using_template_coletterc(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import build_project_bootstrap
         import base64
-        write_template_hook("t", "coletterc", "export FOO=1\n")
+        write_machine_template_hook("local", "t", "coletterc", "export FOO=1\n")
         project = {"name": "p", "path": "/p", "machine": "local", "template": "t"}
         result = build_project_bootstrap(project, "local", {"name": "t"})
         b64_part = result.split("echo ")[1].split(" |")[0].strip("'\"")
@@ -446,11 +446,11 @@ class TestRunTemplateHookSuperInheritance:
 
     def test_project_hook_can_source_super_to_run_template_hook(self, tmp_config, tmp_path):
         """A project hook that calls `source $SUPER` runs the template hook too."""
-        from colette_cli.utils.config import write_project_hook, write_template_hook
+        from colette_cli.utils.config import write_project_hook, write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
         tmpl_marker = tmp_path / "tmpl.txt"
         proj_marker = tmp_path / "proj.txt"
-        write_template_hook(
+        write_machine_template_hook("local", 
             "t", "onstart",
             f"#!/usr/bin/env bash\necho template > {tmpl_marker}"
         )
@@ -466,12 +466,12 @@ class TestRunTemplateHookSuperInheritance:
 
     def test_coletterc_super_allows_project_to_extend_template_env(self, tmp_config, tmp_path):
         """Project coletterc can source $SUPER (template coletterc) then add more vars."""
-        from colette_cli.utils.config import write_project_hook, write_template_hook
+        from colette_cli.utils.config import write_project_hook, write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
         marker = tmp_path / "env.txt"
-        write_template_hook("t", "coletterc", "export BASE_VAR=from_template\n")
+        write_machine_template_hook("local", "t", "coletterc", "export BASE_VAR=from_template\n")
         write_project_hook("proj", "coletterc", 'source "$SUPER"\nexport EXTRA_VAR=from_project\n')
-        write_template_hook(
+        write_machine_template_hook("local", 
             "t", "onstart",
             f"#!/usr/bin/env bash\necho $BASE_VAR $EXTRA_VAR > {marker}"
         )
@@ -486,12 +486,12 @@ class TestRunTemplateHookSubprocessIsolation:
     """Hook subprocess must be isolated from the terminal to avoid curses corruption."""
 
     def test_subprocess_uses_devnull_stdin(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
         from unittest.mock import patch, call
         import subprocess as sp
 
-        write_template_hook("t", "onstart", "#!/usr/bin/env bash\nexit 0")
+        write_machine_template_hook("local", "t", "onstart", "#!/usr/bin/env bash\nexit 0")
         project = {"name": "proj", "path": str(tmp_path), "machine": "local", "template": "t"}
 
         captured_kwargs = {}
@@ -510,19 +510,19 @@ class TestRunTemplateHookSubprocessIsolation:
     """Dead-code fix: fail_on_error=True must exit without also calling warn."""
 
     def test_fail_on_error_false_warns_and_returns_false(self, tmp_config, capsys):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
-        write_template_hook("t", "onstart", "#!/usr/bin/env bash\nexit 7")
+        write_machine_template_hook("local", "t", "onstart", "#!/usr/bin/env bash\nexit 7")
         project = {"name": "proj", "path": "/tmp", "machine": "local", "template": "t"}
         result = run_template_hook(project, {}, "local", False, {"name": "t"}, "onstart", fail_on_error=False)
         assert result is False
         assert "failed" in capsys.readouterr().err
 
     def test_fail_on_error_true_raises_system_exit(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
         import pytest
-        write_template_hook("t", "oncreate", "#!/usr/bin/env bash\nexit 3")
+        write_machine_template_hook("local", "t", "oncreate", "#!/usr/bin/env bash\nexit 3")
         project = {"name": "proj", "path": "/tmp", "machine": "local", "template": "t"}
         with pytest.raises(SystemExit):
             run_template_hook(project, {}, "local", False, {"name": "t"}, "oncreate", fail_on_error=True)
@@ -532,9 +532,9 @@ class TestRunTemplateHookPersistsFailures:
     """Hook failures are written to the hook-failures log."""
 
     def test_failed_hook_appends_to_log(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook, load_hook_failures
+        from colette_cli.utils.config import write_machine_template_hook, load_hook_failures
         from colette_cli.template.executor import run_template_hook
-        write_template_hook("t", "onstart", "#!/usr/bin/env bash\necho oops >&2\nexit 1")
+        write_machine_template_hook("local", "t", "onstart", "#!/usr/bin/env bash\necho oops >&2\nexit 1")
         project = {"name": "myproj", "path": "/tmp", "machine": "local", "template": "t"}
         run_template_hook(project, {}, "local", False, {"name": "t"}, "onstart")
         failures = load_hook_failures()
@@ -546,17 +546,17 @@ class TestRunTemplateHookPersistsFailures:
         assert "oops" in failures[0]["output"]
 
     def test_successful_hook_does_not_append_to_log(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook, load_hook_failures
+        from colette_cli.utils.config import write_machine_template_hook, load_hook_failures
         from colette_cli.template.executor import run_template_hook
-        write_template_hook("t", "onstart", "#!/usr/bin/env bash\nexit 0")
+        write_machine_template_hook("local", "t", "onstart", "#!/usr/bin/env bash\nexit 0")
         project = {"name": "proj", "path": "/tmp", "machine": "local", "template": "t"}
         run_template_hook(project, {}, "local", False, {"name": "t"}, "onstart")
         assert load_hook_failures() == []
 
     def test_multiple_failures_accumulate(self, tmp_config):
-        from colette_cli.utils.config import write_template_hook, load_hook_failures
+        from colette_cli.utils.config import write_machine_template_hook, load_hook_failures
         from colette_cli.template.executor import run_template_hook
-        write_template_hook("t", "onstart", "#!/usr/bin/env bash\nexit 1")
+        write_machine_template_hook("local", "t", "onstart", "#!/usr/bin/env bash\nexit 1")
         project = {"name": "proj", "path": "/tmp", "machine": "local", "template": "t"}
         metadata = {"name": "t"}
         run_template_hook(project, {}, "local", False, metadata, "onstart")
@@ -568,11 +568,11 @@ class TestPrependColetterrcSuperCollision:
     """SUPER is correctly restored after coletterc when hook_super_path is provided."""
 
     def test_hook_super_path_appears_after_coletterc(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import write_project_hook, write_template_hook
+        from colette_cli.utils.config import write_project_hook, write_machine_template_hook
         from colette_cli.template.executor import _prepend_coletterc
 
         write_project_hook("proj", "coletterc", "export PROJ_INIT=1\n")
-        write_template_hook("t", "coletterc", "export TMPL_INIT=1\n")
+        write_machine_template_hook("local", "t", "coletterc", "export TMPL_INIT=1\n")
 
         fake_hook_super = str(tmp_path / "tmpl_onstart")
         result = _prepend_coletterc("proj", "t", "echo hook", hook_super_path=fake_hook_super)
@@ -585,15 +585,15 @@ class TestPrependColetterrcSuperCollision:
 
     def test_project_hook_super_survives_coletterc(self, tmp_config, tmp_path):
         """$SUPER in the hook still points to the template hook after coletterc runs."""
-        from colette_cli.utils.config import write_project_hook, write_template_hook
+        from colette_cli.utils.config import write_project_hook, write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
 
         tmpl_marker = tmp_path / "tmpl.txt"
         proj_marker = tmp_path / "proj.txt"
         coletterc_marker = tmp_path / "rc.txt"
 
-        write_template_hook("t", "coletterc", f"echo rc > {coletterc_marker}\n")
-        write_template_hook("t", "onstart", f"#!/usr/bin/env bash\necho template > {tmpl_marker}")
+        write_machine_template_hook("local", "t", "coletterc", f"echo rc > {coletterc_marker}\n")
+        write_machine_template_hook("local", "t", "onstart", f"#!/usr/bin/env bash\necho template > {tmpl_marker}")
         write_project_hook(
             "proj", "onstart",
             f'#!/usr/bin/env bash\nsource "$SUPER"\necho project > {proj_marker}'
@@ -635,11 +635,11 @@ class TestSuperRemote:
 
     def test_prepend_coletterc_remote_no_local_path(self, tmp_config):
         """_prepend_coletterc with is_remote=True must not embed local paths."""
-        from colette_cli.utils.config import write_template_hook, write_project_hook
+        from colette_cli.utils.config import write_machine_template_hook, write_project_hook
         from colette_cli.template.executor import _prepend_coletterc
-        write_template_hook("t", "coletterc", "# template rc\nexport FOO=1")
+        write_machine_template_hook("local", "t", "coletterc", "# template rc\nexport FOO=1")
         write_project_hook("proj", "coletterc", "# project rc\nexport BAR=2")
-        result = _prepend_coletterc("proj", "t", "echo done", is_remote=True)
+        result = _prepend_coletterc("proj", "t", "echo done", is_remote=True, machine_name="local")
         assert "mktemp" in result
         assert ".config/colette" not in result
 
@@ -671,40 +671,39 @@ class TestSuperRemote:
 
 
 class TestMachineSpecificHookResolution:
-    def test_machine_hook_takes_precedence_over_shared_when_effective(self, tmp_config, tmp_path):
-        """Machine-template hook is used instead of shared template hook."""
-        from colette_cli.utils.config import write_template_hook, write_machine_template_hook
+    def test_machine_hook_runs_directly_when_no_project_override(self, tmp_config, tmp_path):
+        """With no project-level override, the machine-template hook runs as-is."""
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
 
         marker = tmp_path / "result.txt"
-        write_template_hook("dev", "onstart", f"#!/usr/bin/env bash\necho shared > {marker}")
         write_machine_template_hook("myhost", "dev", "onstart", f"#!/usr/bin/env bash\necho machine > {marker}")
 
         project = {"name": "proj", "path": str(tmp_path), "machine": "myhost", "template": "dev"}
         run_template_hook(project, {}, "myhost", False, {"name": "dev"}, "onstart")
         assert marker.read_text().strip() == "machine"
 
-    def test_falls_back_to_shared_when_machine_hook_not_effective(self, tmp_config, tmp_path):
-        """Falls back to shared template hook when machine hook has no effective content."""
-        from colette_cli.utils.config import write_template_hook, write_machine_template_hook
+    def test_no_hook_runs_when_machine_hook_not_effective(self, tmp_config, tmp_path):
+        """A machine-template hook with no effective content means no hook runs at all."""
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
 
         marker = tmp_path / "result.txt"
-        write_template_hook("dev", "onstart", f"#!/usr/bin/env bash\necho shared > {marker}")
         # Only shebang + comment — not effective
         write_machine_template_hook("myhost", "dev", "onstart", "#!/usr/bin/env bash\n# empty\n")
 
         project = {"name": "proj", "path": str(tmp_path), "machine": "myhost", "template": "dev"}
-        run_template_hook(project, {}, "myhost", False, {"name": "dev"}, "onstart")
-        assert marker.read_text().strip() == "shared"
+        result = run_template_hook(project, {}, "myhost", False, {"name": "dev"}, "onstart")
+        assert result is True
+        assert not marker.exists()
 
     def test_machine_params_override_shared_params(self, tmp_config, tmp_path):
         """Machine-specific params override shared template params in the environment."""
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_template_hook
 
         marker = tmp_path / "param.txt"
-        write_template_hook("dev", "onstart", f"#!/usr/bin/env bash\necho $COLETTE_PARAM_PORT > {marker}")
+        write_machine_template_hook("myhost", "dev", "onstart", f"#!/usr/bin/env bash\necho $COLETTE_PARAM_PORT > {marker}")
 
         project = {"name": "proj", "path": str(tmp_path), "machine": "myhost", "template": "dev"}
         # shared params: PORT=9000, machine params: PORT=8080
@@ -725,44 +724,44 @@ class TestRunOnupdateForTemplate:
         assert result is True
 
     def test_runs_onupdate_hook_successfully(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_onupdate_for_template
         marker = tmp_path / "marker.txt"
-        write_template_hook("tmpl", "onupdate", f"#!/usr/bin/env bash\necho ran > {marker}")
+        write_machine_template_hook("local", "tmpl", "onupdate", f"#!/usr/bin/env bash\necho ran > {marker}")
         result = run_onupdate_for_template("tmpl", {}, "local", False, {"name": "tmpl"}, template_path=str(tmp_path))
         assert result is True
         assert marker.read_text().strip() == "ran"
 
     def test_coletterc_is_applied_before_onupdate(self, tmp_config, tmp_path):
         """coletterc is sourced before the onupdate hook."""
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_onupdate_for_template
         marker = tmp_path / "order.txt"
-        write_template_hook("tmpl", "coletterc", "export RC_RAN=1\n")
-        write_template_hook("tmpl", "onupdate", f"#!/usr/bin/env bash\necho $RC_RAN > {marker}")
+        write_machine_template_hook("local", "tmpl", "coletterc", "export RC_RAN=1\n")
+        write_machine_template_hook("local", "tmpl", "onupdate", f"#!/usr/bin/env bash\necho $RC_RAN > {marker}")
         result = run_onupdate_for_template("tmpl", {}, "local", False, {"name": "tmpl"}, template_path=str(tmp_path))
         assert result is True
         assert marker.read_text().strip() == "1"
 
     def test_failed_hook_returns_false(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_onupdate_for_template
-        write_template_hook("tmpl", "onupdate", "#!/usr/bin/env bash\nexit 1")
+        write_machine_template_hook("local", "tmpl", "onupdate", "#!/usr/bin/env bash\nexit 1")
         result = run_onupdate_for_template("tmpl", {}, "local", False, {"name": "tmpl"}, template_path=str(tmp_path))
         assert result is False
 
     def test_failed_hook_exits_when_fail_on_error(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_onupdate_for_template
-        write_template_hook("tmpl", "onupdate", "#!/usr/bin/env bash\nexit 42")
+        write_machine_template_hook("local", "tmpl", "onupdate", "#!/usr/bin/env bash\nexit 42")
         with pytest.raises(SystemExit):
             run_onupdate_for_template("tmpl", {}, "local", False, {"name": "tmpl"}, template_path=str(tmp_path), fail_on_error=True)
 
     def test_template_params_available_in_onupdate(self, tmp_config, tmp_path):
-        from colette_cli.utils.config import write_template_hook
+        from colette_cli.utils.config import write_machine_template_hook
         from colette_cli.template.executor import run_onupdate_for_template
         marker = tmp_path / "param.txt"
-        write_template_hook("tmpl", "onupdate", f"#!/usr/bin/env bash\necho $COLETTE_PARAM_ENV > {marker}")
+        write_machine_template_hook("local", "tmpl", "onupdate", f"#!/usr/bin/env bash\necho $COLETTE_PARAM_ENV > {marker}")
         metadata = {"name": "tmpl", "params": {"ENV": "staging"}}
         result = run_onupdate_for_template("tmpl", {}, "local", False, metadata, template_path=str(tmp_path))
         assert result is True

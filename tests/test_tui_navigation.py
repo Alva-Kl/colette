@@ -91,6 +91,70 @@ class TestMenuNavigation:
 
 
 # ---------------------------------------------------------------------------
+# MenuItem.run() — safety net around leaf actions
+# ---------------------------------------------------------------------------
+
+class TestMenuItemRunSafetyNet:
+    """A leaf action's SystemExit (err()) or generic Exception must never
+    propagate out of MenuItem.run() and crash the whole TUI."""
+
+    def test_system_exit_does_not_propagate(self):
+        from colette_cli.tui.menu import MenuItem
+
+        def boom():
+            raise SystemExit(1)
+
+        item = MenuItem("boom", action=boom)
+        item.run()  # must not raise
+
+    def test_generic_exception_does_not_propagate(self):
+        from colette_cli.tui.menu import MenuItem
+
+        def boom():
+            raise RuntimeError("kaboom")
+
+        item = MenuItem("boom", action=boom)
+        item.run()  # must not raise
+
+    def test_generic_exception_is_shown_via_show_output(self):
+        from colette_cli.tui.menu import MenuItem
+
+        def boom():
+            raise RuntimeError("kaboom")
+
+        item = MenuItem("boom", action=boom)
+        with patch("colette_cli.tui.forms.show_output") as mock_show:
+            item.run()
+        mock_show.assert_called_once()
+        shown_text = mock_show.call_args[0][0]
+        assert "kaboom" in shown_text
+        assert "RuntimeError" in shown_text
+
+    def test_system_exit_does_not_trigger_show_output(self):
+        from colette_cli.tui.menu import MenuItem
+
+        def boom():
+            raise SystemExit(1)
+
+        item = MenuItem("boom", action=boom)
+        with patch("colette_cli.tui.forms.show_output") as mock_show:
+            item.run()
+        mock_show.assert_not_called()
+
+    def test_keyboard_interrupt_still_propagates(self):
+        """Ctrl+C must not be swallowed — it's the real 'exit the whole
+        TUI' signal, handled at the top level in app.py's cmd_tui."""
+        from colette_cli.tui.menu import MenuItem
+
+        def boom():
+            raise KeyboardInterrupt()
+
+        item = MenuItem("boom", action=boom)
+        with pytest.raises(KeyboardInterrupt):
+            item.run()
+
+
+# ---------------------------------------------------------------------------
 # show_splash
 # ---------------------------------------------------------------------------
 
@@ -411,6 +475,81 @@ class TestAppLoop:
         finally:
             state.running_tasks = orig
         assert mock_confirm.call_count == 0
+
+
+class TestToast:
+    """Menu._render() surfaces a transient toast for completed background
+    tasks, riding the existing 200ms poll — no new timer."""
+
+    def setup_method(self):
+        import colette_cli.tui.state as state
+        state.notifications.clear()
+        state.last_seen_notification_index = 0
+
+    def teardown_method(self):
+        import colette_cli.tui.state as state
+        state.notifications.clear()
+        state.last_seen_notification_index = 0
+
+    def _menu(self, items=None):
+        from colette_cli.tui.menu import Menu
+        scr = MagicMock()
+        scr.getmaxyx.return_value = (24, 80)
+        return Menu(scr, items or [_make_leaf("A")])
+
+    def test_new_notification_becomes_toast_on_render(self):
+        import colette_cli.tui.state as state
+        state.notifications.append(state.Notification(label="did-thing", success=True, output=""))
+        menu = self._menu()
+        menu._render()
+        assert menu._toast is not None
+        assert menu._toast.label == "did-thing"
+
+    def test_render_advances_last_seen_index(self):
+        import colette_cli.tui.state as state
+        state.notifications.append(state.Notification(label="did-thing", success=True, output=""))
+        menu = self._menu()
+        menu._render()
+        assert state.last_seen_notification_index == 1
+
+    def test_notification_seen_before_menu_created_is_not_re_toasted(self):
+        import colette_cli.tui.state as state
+        state.notifications.append(state.Notification(label="old-thing", success=True, output=""))
+        state.last_seen_notification_index = 1
+        menu = self._menu()
+        menu._render()
+        assert menu._toast is None
+
+    def test_toast_clears_after_expiry(self):
+        import colette_cli.tui.state as state
+        state.notifications.append(state.Notification(label="did-thing", success=True, output=""))
+        menu = self._menu()
+        menu._render()
+        assert menu._toast is not None
+        menu._toast_until = 0.0  # force expiry
+        menu._render()
+        assert menu._toast is None
+
+    def test_toast_draws_on_bottom_border_row(self):
+        import colette_cli.tui.state as state
+        state.notifications.append(state.Notification(label="did-thing", success=True, output=""))
+        menu = self._menu()
+        menu._render()
+        rows_written = [call.args[0] for call in menu._scr.addstr.call_args_list]
+        h, w = menu._scr.getmaxyx()
+        assert (h - 2) in rows_written
+
+    def test_failed_notification_shows_x_prefix(self):
+        import colette_cli.tui.state as state
+        state.notifications.append(state.Notification(label="bad-thing", success=False, output="err"))
+        menu = self._menu()
+        menu._render()
+        assert menu._toast.success is False
+        toast_texts = [
+            call.args[2] for call in menu._scr.addstr.call_args_list
+            if len(call.args) > 2 and isinstance(call.args[2], str) and "bad-thing" in call.args[2]
+        ]
+        assert toast_texts and "✗" in toast_texts[0]
 
 
 class TestNotificationsKey:

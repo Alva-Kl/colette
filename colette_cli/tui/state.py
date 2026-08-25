@@ -21,3 +21,5 @@ notifications_lock = threading.Lock()
 
 running_tasks: int = 0
 running_tasks_lock = threading.Lock()
+
+last_seen_notification_index: int = 0

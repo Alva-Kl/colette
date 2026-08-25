@@ -6,30 +6,30 @@ import pytest
 class TestScaffoldTemplateHookFiles:
     def test_creates_all_hooks(self, tmp_config):
         from colette_cli.template.registry import scaffold_template_hook_files, SCRIPT_KEYS
-        from colette_cli.utils.config import template_hook_exists
-        scaffold_template_hook_files("tmpl")
+        from colette_cli.utils.config import machine_template_hook_exists
+        scaffold_template_hook_files("tmpl", "myhost")
         for key in SCRIPT_KEYS:
-            assert template_hook_exists("tmpl", key)
+            assert machine_template_hook_exists("myhost", "tmpl", key)
 
     def test_does_not_overwrite_existing(self, tmp_config):
         from colette_cli.template.registry import scaffold_template_hook_files
-        from colette_cli.utils.config import write_template_hook, read_template_hook
-        write_template_hook("tmpl", "onstart", "custom")
-        scaffold_template_hook_files("tmpl")
-        assert read_template_hook("tmpl", "onstart") == "custom"
+        from colette_cli.utils.config import write_machine_template_hook, read_machine_template_hook
+        write_machine_template_hook("myhost", "tmpl", "onstart", "custom")
+        scaffold_template_hook_files("tmpl", "myhost")
+        assert read_machine_template_hook("myhost", "tmpl", "onstart") == "custom"
 
     def test_default_shell_hook_content(self, tmp_config):
         from colette_cli.template.registry import scaffold_template_hook_files
-        from colette_cli.utils.config import read_template_hook
-        scaffold_template_hook_files("tmpl")
-        content = read_template_hook("tmpl", "onstart")
+        from colette_cli.utils.config import read_machine_template_hook
+        scaffold_template_hook_files("tmpl", "myhost")
+        content = read_machine_template_hook("myhost", "tmpl", "onstart")
         assert "#!/usr/bin/env bash" in content
 
     def test_default_coletterc_content(self, tmp_config):
         from colette_cli.template.registry import scaffold_template_hook_files
-        from colette_cli.utils.config import read_template_hook
-        scaffold_template_hook_files("tmpl")
-        content = read_template_hook("tmpl", "coletterc")
+        from colette_cli.utils.config import read_machine_template_hook
+        scaffold_template_hook_files("tmpl", "myhost")
+        content = read_machine_template_hook("myhost", "tmpl", "coletterc")
         assert "#!/usr/bin/env bash" not in content
         assert "tmpl" in content
 
@@ -67,71 +67,135 @@ class TestListMachineTemplateNames:
         assert list_machine_template_names({}) == []
 
 
-class TestUpsertTemplateMetadata:
-    def test_inserts_new(self):
-        from colette_cli.template.registry import upsert_template_metadata
-        cfg = {"templates": []}
-        upsert_template_metadata(cfg, "t1", "A template", {"KEY": "val"})
-        assert len(cfg["templates"]) == 1
-        assert cfg["templates"][0]["name"] == "t1"
-        assert cfg["templates"][0]["description"] == "A template"
+class TestListCreatableTemplates:
+    def test_local_machine_returns_own_templates_only(self, tmp_config):
+        from colette_cli.template.registry import list_creatable_templates
+        machine = {"type": "local", "templates": [{"name": "a", "type": "directory", "path": "/p"}]}
+        assert list_creatable_templates(machine, "local") == machine["templates"]
 
-    def test_updates_existing(self):
-        from colette_cli.template.registry import upsert_template_metadata
-        cfg = {"templates": [{"name": "t1", "description": "old"}]}
-        upsert_template_metadata(cfg, "t1", "new desc")
-        assert cfg["templates"][0]["description"] == "new desc"
+    def test_ssh_machine_with_no_cache_returns_own_templates_only(self, tmp_config):
+        from colette_cli.template.registry import list_creatable_templates
+        machine = {"type": "ssh", "host": "h", "templates": [{"name": "a"}]}
+        assert list_creatable_templates(machine, "remote") == machine["templates"]
 
-    def test_keeps_existing_params_when_none_passed(self):
-        from colette_cli.template.registry import upsert_template_metadata
-        cfg = {"templates": [{"name": "t1", "params": {"K": "v"}}]}
-        upsert_template_metadata(cfg, "t1", "desc", None)
-        assert cfg["templates"][0].get("params") == {"K": "v"}
+    def test_ssh_machine_merges_cached_templates(self, tmp_config):
+        from colette_cli.utils.config import save_machine_cache
+        from colette_cli.template.registry import list_creatable_templates
+        save_machine_cache("remote", {
+            "machine": "remote",
+            "synced_at": "2026-01-01T00:00:00Z",
+            "projects_dir": "/home/user",
+            "templates": [{"name": "docker-deployed", "type": "directory", "path": "~/tmpl"}],
+            "projects": [],
+        })
+        machine = {"type": "ssh", "host": "h", "templates": []}
+        names = [t["name"] for t in list_creatable_templates(machine, "remote")]
+        assert names == ["docker-deployed"]
 
-    def test_removes_params_when_empty_dict(self):
-        from colette_cli.template.registry import upsert_template_metadata
-        cfg = {"templates": [{"name": "t1", "params": {"K": "v"}}]}
-        upsert_template_metadata(cfg, "t1", None, {})
-        assert "params" not in cfg["templates"][0]
+    def test_local_template_takes_precedence_over_cache_on_name_collision(self, tmp_config):
+        from colette_cli.utils.config import save_machine_cache
+        from colette_cli.template.registry import list_creatable_templates
+        save_machine_cache("remote", {
+            "machine": "remote",
+            "synced_at": "2026-01-01T00:00:00Z",
+            "projects_dir": "/home/user",
+            "templates": [{"name": "tmpl", "type": "directory", "path": "/cached/path"}],
+            "projects": [],
+        })
+        machine = {
+            "type": "ssh",
+            "host": "h",
+            "templates": [{"name": "tmpl", "type": "directory", "path": "/local/path"}],
+        }
+        result = list_creatable_templates(machine, "remote")
+        assert len(result) == 1
+        assert result[0]["path"] == "/local/path"
+
+    def test_local_machine_ignores_any_stray_cache_file(self, tmp_config):
+        """Cache merging is gated on type == 'ssh' — a local machine's own
+        entry never gets cache-derived templates even if a cache file exists."""
+        from colette_cli.utils.config import save_machine_cache
+        from colette_cli.template.registry import list_creatable_templates
+        save_machine_cache("local", {
+            "machine": "local", "synced_at": "x", "projects_dir": "",
+            "templates": [{"name": "should-not-appear"}], "projects": [],
+        })
+        machine = {"type": "local", "templates": []}
+        assert list_creatable_templates(machine, "local") == []
 
 
-class TestRemoveTemplateMetadata:
-    def test_removes_by_name(self):
-        from colette_cli.template.registry import remove_template_metadata
-        cfg = {"templates": [{"name": "t1"}, {"name": "t2"}]}
-        remove_template_metadata(cfg, "t1")
-        assert len(cfg["templates"]) == 1
-        assert cfg["templates"][0]["name"] == "t2"
+class TestGetCreatableTemplate:
+    def test_finds_local_template(self, tmp_config):
+        from colette_cli.template.registry import get_creatable_template
+        machine = {"type": "local", "templates": [{"name": "a", "path": "/p"}]}
+        assert get_creatable_template(machine, "local", "a")["path"] == "/p"
 
-    def test_missing_name_is_noop(self):
-        from colette_cli.template.registry import remove_template_metadata
-        cfg = {"templates": [{"name": "t1"}]}
-        remove_template_metadata(cfg, "nope")
-        assert len(cfg["templates"]) == 1
+    def test_finds_cached_template(self, tmp_config):
+        from colette_cli.utils.config import save_machine_cache
+        from colette_cli.template.registry import get_creatable_template
+        save_machine_cache("remote", {
+            "machine": "remote", "synced_at": "x", "projects_dir": "",
+            "templates": [{"name": "docker-deployed", "type": "directory", "path": "~/tmpl"}],
+            "projects": [],
+        })
+        machine = {"type": "ssh", "host": "h", "templates": []}
+        found = get_creatable_template(machine, "remote", "docker-deployed")
+        assert found["path"] == "~/tmpl"
+
+    def test_returns_none_when_missing(self, tmp_config):
+        from colette_cli.template.registry import get_creatable_template
+        assert get_creatable_template({"type": "ssh"}, "remote", "missing") is None
 
 
-class TestListTemplateHookPaths:
+class TestListCreatableTemplateNames:
+    def test_merges_local_and_cached_names(self, tmp_config):
+        from colette_cli.utils.config import save_machine_cache
+        from colette_cli.template.registry import list_creatable_template_names
+        save_machine_cache("remote", {
+            "machine": "remote", "synced_at": "x", "projects_dir": "",
+            "templates": [{"name": "cached-tmpl"}], "projects": [],
+        })
+        machine = {"type": "ssh", "host": "h", "templates": [{"name": "local-tmpl"}]}
+        names = list_creatable_template_names(machine, "remote")
+        assert set(names) == {"local-tmpl", "cached-tmpl"}
+
+
+class TestListMachineTemplateHookPaths:
     def test_returns_existing_hooks(self, tmp_config):
-        from colette_cli.template.registry import scaffold_template_hook_files, list_template_hook_paths
-        scaffold_template_hook_files("tmpl")
-        paths = list_template_hook_paths("tmpl")
+        from colette_cli.template.registry import scaffold_template_hook_files, list_machine_template_hook_paths
+        scaffold_template_hook_files("tmpl", "myhost")
+        paths = list_machine_template_hook_paths("myhost", "tmpl")
         assert "onstart" in paths
         assert "oncreate" in paths
 
 
-class TestScaffoldMachineTemplateHookFiles:
-    def test_creates_all_hook_files(self, tmp_config):
-        from colette_cli.template.registry import scaffold_machine_template_hook_files
+class TestGetTemplateMetadata:
+    def test_reads_description_and_params_from_machine_entry(self, tmp_config):
+        from colette_cli.template.registry import get_template_metadata
+        machine = {
+            "type": "local",
+            "templates": [{"name": "tmpl", "description": "A template", "params": {"KEY": "val"}}],
+        }
+        metadata = get_template_metadata(machine, "local", "tmpl")
+        assert metadata["description"] == "A template"
+        assert metadata["params"] == {"KEY": "val"}
+
+    def test_no_description_or_params_when_machine_entry_lacks_them(self, tmp_config):
+        from colette_cli.template.registry import get_template_metadata
+        machine = {"type": "local", "templates": [{"name": "tmpl"}]}
+        metadata = get_template_metadata(machine, "local", "tmpl")
+        assert "description" not in metadata
+        assert "params" not in metadata
+
+    def test_returns_none_without_template_name(self, tmp_config):
+        from colette_cli.template.registry import get_template_metadata
+        assert get_template_metadata({}, "local", None) is None
+
+    def test_scaffolds_hooks_and_reports_hooks_dir(self, tmp_config):
+        from colette_cli.template.registry import get_template_metadata
         from colette_cli.utils.config import machine_template_hook_exists
-
-        scaffold_machine_template_hook_files("myhost", "dev")
-        for hook in ("oncreate", "onstart", "onstop", "onlogs", "coletterc"):
-            assert machine_template_hook_exists("myhost", "dev", hook)
-
-    def test_does_not_overwrite_existing(self, tmp_config):
-        from colette_cli.template.registry import scaffold_machine_template_hook_files
-        from colette_cli.utils.config import write_machine_template_hook, read_machine_template_hook
-
-        write_machine_template_hook("myhost", "dev", "onstart", "custom content")
-        scaffold_machine_template_hook_files("myhost", "dev")
-        assert read_machine_template_hook("myhost", "dev", "onstart") == "custom content"
+        machine = {"type": "local", "templates": [{"name": "tmpl"}]}
+        metadata = get_template_metadata(machine, "local", "tmpl")
+        assert machine_template_hook_exists("local", "tmpl", "oncreate")
+        assert metadata["hooks_dir"].endswith("machines/local/templates/tmpl")
+        assert "oncreate" in metadata["scripts"]

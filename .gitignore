@@ -33,3 +33,6 @@ TODO.MD
 AGENT.MD
 perso/
 .github
+
+# Sandbox container state (fake $HOME dirs, generated keys) — never committed
+sandbox/state/

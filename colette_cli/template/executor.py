@@ -12,12 +12,9 @@ from colette_cli.utils.config import (
     get_machine_template_dir,
     get_machine_template_hook_path,
     get_machine_template_params,
-    get_template_hook_path,
     machine_template_hook_exists,
     read_machine_template_hook,
     read_project_hook,
-    read_template_hook,
-    template_hook_exists,
 )
 from colette_cli.utils.formatting import err, warn
 from colette_cli.utils.ssh import ssh_run
@@ -135,9 +132,8 @@ def _resolve_hook_with_super(project_name, template_name, hook_name, machine_nam
     Local resolution order (used when *remote_hooks* is None):
       1. Project-specific hook
       2. Machine-template hook (machine_name + template override)
-      3. Shared template hook
-    Each level can call `source $SUPER` to delegate to the next; super_source
-    is a Path in this mode.
+    The project hook can call `source $SUPER` to delegate to the
+    machine-template hook; super_source is a Path in this mode.
 
     When *remote_hooks* is provided (a dict from ssh_read_hook_files), this
     resolves against that pre-fetched remote snapshot instead of local disk,
@@ -164,34 +160,20 @@ def _resolve_hook_with_super(project_name, template_name, hook_name, machine_nam
         if machine_name and template_name
         else None
     )
-    shared_template_path = (
-        get_template_hook_path(template_name, hook_name) if template_name else None
-    )
 
     project_hook = read_project_hook(project_name, hook_name) if project_name else None
     if _has_effective_script(project_hook):
-        # super for project hook: machine-template hook if effective, else shared template hook
+        # super for project hook: the machine-template hook, if effective
         if machine_name and template_name and machine_template_hook_exists(machine_name, template_name, hook_name):
             machine_hook_content = read_machine_template_hook(machine_name, template_name, hook_name)
             if _has_effective_script(machine_hook_content):
                 return project_hook, machine_template_path
-        # Only use the template hook as super if the file actually exists on disk
-        if template_name and template_hook_exists(template_name, hook_name):
-            return project_hook, shared_template_path
         return project_hook, None
 
     if machine_name and template_name:
         machine_hook = read_machine_template_hook(machine_name, template_name, hook_name)
         if _has_effective_script(machine_hook):
-            # Only use the template hook as super if the file actually exists on disk
-            if template_name and template_hook_exists(template_name, hook_name):
-                return machine_hook, shared_template_path
             return machine_hook, None
-
-    if template_name:
-        template_hook = read_template_hook(template_name, hook_name)
-        if _has_effective_script(template_hook):
-            return template_hook, None
 
     return None, None
 
@@ -219,7 +201,7 @@ def _hook_environment(
     return env
 
 
-def _prepend_coletterc(project_name, template_name, command, hook_super_path=None, is_remote: bool = False, remote_hooks=None):
+def _prepend_coletterc(project_name, template_name, command, hook_super_path=None, is_remote: bool = False, remote_hooks=None, machine_name=None):
     """Prepend coletterc sourcing to a hook command.
 
     When a project-level coletterc is active, SUPER is set to the template
@@ -229,7 +211,7 @@ def _prepend_coletterc(project_name, template_name, command, hook_super_path=Non
     Returns the unmodified command if no effective coletterc is found.
     """
     coletterc, super_path = _resolve_hook_with_super(
-        project_name, template_name, "coletterc", remote_hooks=remote_hooks
+        project_name, template_name, "coletterc", machine_name=machine_name, remote_hooks=remote_hooks
     )
     if not coletterc:
         return command
@@ -304,7 +286,7 @@ def run_template_hook(
 
     command = _prepend_coletterc(
         project["name"], tmpl_name, command, hook_super_path=super_path,
-        is_remote=is_remote, remote_hooks=remote_hooks,
+        is_remote=is_remote, remote_hooks=remote_hooks, machine_name=machine_name,
     )
 
     machine_params = get_machine_template_params(machine, tmpl_name) if tmpl_name else {}
@@ -343,7 +325,7 @@ def build_hook_command(project, machine_name, template_metadata, machine, hook_n
 
     command = _prepend_coletterc(
         project["name"], tmpl_name, command, hook_super_path=super_path,
-        is_remote=is_remote, remote_hooks=remote_hooks,
+        is_remote=is_remote, remote_hooks=remote_hooks, machine_name=machine_name,
     )
 
     machine_params = get_machine_template_params(machine, tmpl_name) if tmpl_name else {}
@@ -376,17 +358,12 @@ def run_onupdate_for_template(
     The working directory is *template_path* when provided, or the template
     hooks directory otherwise.
     """
-    # Prefer machine-specific hook; fall back to shared legacy hook.
     command = read_machine_template_hook(machine_name, template_name, "onupdate") if machine_name else None
-    if command is None:
-        command = read_template_hook(template_name, "onupdate")
     if not _has_effective_script(command):
         return True
 
     # Prepend the template's coletterc (no project override possible here)
     coletterc = read_machine_template_hook(machine_name, template_name, "coletterc") if machine_name else None
-    if coletterc is None:
-        coletterc = read_template_hook(template_name, "coletterc")
     if _has_effective_script(coletterc):
         command = coletterc.strip() + "\n" + command
 
@@ -405,11 +382,7 @@ def run_onupdate_for_template(
     if template_path:
         env["COLETTE_TEMPLATE_PATH"] = str(template_path)
 
-    hooks_dir = (
-        str(get_machine_template_dir(machine_name, template_name))
-        if machine_name
-        else str(get_template_hook_path(template_name, "onupdate").parent)
-    )
+    hooks_dir = str(get_machine_template_dir(machine_name, template_name))
     cwd = template_path or hooks_dir
 
     result = _run_hook_subprocess(command, cwd, is_remote, machine, env)

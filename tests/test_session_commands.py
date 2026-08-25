@@ -204,6 +204,28 @@ class TestCmdMonitor:
             with pytest.raises(SystemExit):
                 cmd_monitor(args)
 
+    def test_monitor_remote_machine_uses_ssh_attach_command(self, tmp_config):
+        """Standard monitor mode against an ssh-type machine builds an SSH
+        attach command via _build_ssh_attach_command, not a bare tmux one."""
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.session.commands import cmd_monitor
+        save_config({
+            "machines": {"remote": {"type": "ssh", "host": "user@remote-host", "projects_dir": "/home/user"}},
+            "default_machine": "remote",
+        })
+        save_local_projects([make_project("proj", machine="remote", path="/home/user/proj")])
+        args = self._std_args()
+
+        with patch("colette_cli.session.commands.get_sessions", return_value={"proj"}), \
+             patch("colette_cli.session.commands.create_tmux_window_with_panes") as mock_panes:
+            cmd_monitor(args)
+
+        active_list = mock_panes.call_args[0][1]
+        assert len(active_list) == 1
+        _, wrapped_cmd = active_list[0]
+        assert "ssh" in wrapped_cmd
+        assert "user@remote-host" in wrapped_cmd
+
     def test_monitor_blocked_from_project_session(self, tmp_config):
         """cmd_monitor exits when run from within a registered colette project session."""
         from colette_cli.utils.config import save_config, save_local_projects
@@ -767,3 +789,91 @@ class TestCwdDetectLogs:
 
         mock_logs.assert_called_once()
         assert mock_logs.call_args[0][0].name == "proj-b"
+
+
+class TestCmdLogs:
+    def test_single_project_no_onlogs_hook_exits(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.session.commands import cmd_logs
+        save_config({"machines": {"local": make_local_machine(str(tmp_path))}, "default_machine": "local"})
+        save_local_projects([make_project("proj", path=str(tmp_path))])
+        args = MagicMock()
+        args.name = "proj"
+        with pytest.raises(SystemExit):
+            cmd_logs(args)
+
+    def test_single_project_local_opens_tmux_session(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects, write_project_hook
+        from colette_cli.session.commands import cmd_logs
+        save_config({"machines": {"local": make_local_machine(str(tmp_path))}, "default_machine": "local"})
+        save_local_projects([make_project("proj", path=str(tmp_path))])
+        write_project_hook("proj", "onlogs", "#!/usr/bin/env bash\ntail -f log")
+        args = MagicMock()
+        args.name = "proj"
+
+        with patch("colette_cli.session.commands.local_tmux_session") as mock_tmux:
+            cmd_logs(args)
+
+        mock_tmux.assert_called_once()
+        assert mock_tmux.call_args[0][0] == "proj-logs"
+        assert "tail -f log" in mock_tmux.call_args[0][2]
+
+    def test_single_project_remote_uses_ssh_interactive(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.session.commands import cmd_logs
+        save_config({
+            "machines": {"remote": {"type": "ssh", "host": "user@host", "projects_dir": str(tmp_path)}},
+            "default_machine": "remote",
+        })
+        save_local_projects([make_project("proj", machine="remote", path=str(tmp_path))])
+        args = MagicMock()
+        args.name = "proj"
+
+        remote_hooks = {
+            "onlogs": {"project": "#!/usr/bin/env bash\ntail -f log", "template": None},
+        }
+        with patch("colette_cli.utils.ssh.ssh_read_hook_files", return_value=remote_hooks), \
+             patch("colette_cli.session.commands.ssh_interactive") as mock_ssh:
+            cmd_logs(args)
+
+        mock_ssh.assert_called_once()
+        tmux_cmd = mock_ssh.call_args[0][1]
+        assert "proj-logs" in tmux_cmd
+
+    def test_all_projects_no_active_hooks_exits(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.session.commands import cmd_logs
+        save_config({"machines": {"local": make_local_machine(str(tmp_path))}, "default_machine": "local"})
+        save_local_projects([make_project("proj", path=str(tmp_path))])
+        args = MagicMock(machine=None)
+        args.name = None
+        with pytest.raises(SystemExit):
+            cmd_logs(args)
+
+    def test_all_projects_creates_panes_only_for_active(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects, write_project_hook
+        from colette_cli.session.commands import cmd_logs
+        save_config({"machines": {"local": make_local_machine(str(tmp_path))}, "default_machine": "local"})
+        save_local_projects([
+            make_project("has-logs", path=str(tmp_path)),
+            make_project("no-logs", path=str(tmp_path)),
+        ])
+        write_project_hook("has-logs", "onlogs", "#!/usr/bin/env bash\ntail -f log")
+        args = MagicMock(machine=None)
+        args.name = None
+
+        with patch("colette_cli.session.commands.create_tmux_window_with_panes") as mock_panes:
+            cmd_logs(args)
+
+        mock_panes.assert_called_once()
+        active_names = [p["name"] for p, _ in mock_panes.call_args[0][1]]
+        assert active_names == ["has-logs"]
+
+    def test_all_projects_no_projects_at_all_prints_message(self, tmp_config, capsys):
+        from colette_cli.utils.config import save_config
+        from colette_cli.session.commands import cmd_logs
+        save_config(LOCAL_CFG)
+        args = MagicMock(machine=None)
+        args.name = None
+        cmd_logs(args)
+        assert "No projects" in capsys.readouterr().out

@@ -8,10 +8,10 @@ from pathlib import Path
 
 from colette_cli.template import (
     build_project_bootstrap,
-    get_machine_template,
+    get_creatable_template,
     get_project_template_name,
     get_template_metadata,
-    list_machine_template_names,
+    list_creatable_template_names,
     run_template_hook,
 )
 from colette_cli.utils.config import (
@@ -71,6 +71,9 @@ def cmd_create(args):
     if name in all_template_names(cfg):
         err(f"'{name}' is already used as a template name.")
 
+    if name in cfg.get("machines", {}):
+        err(f"'{name}' is already used as a machine name.")
+
     machine_name = args.machine or cfg.get("default_machine")
     if not machine_name:
         err(
@@ -80,7 +83,7 @@ def cmd_create(args):
 
     machine = require_machine(cfg, machine_name)
     projects_dir = machine.get("projects_dir", "")
-    template_names = list_machine_template_names(machine)
+    template_names = list_creatable_template_names(machine, machine_name)
     if not projects_dir:
         err(f"machine '{machine_name}' has no 'projects_dir' configured.")
 
@@ -102,7 +105,7 @@ def cmd_create(args):
 
     template_source = None
     if template_name:
-        template_source = get_machine_template(machine, template_name)
+        template_source = get_creatable_template(machine, machine_name, template_name)
         if template_source["type"] == "directory" and not (template_source.get("path") or "").strip():
             err(f"template '{template_name}' has no source path configured.")
         if template_source["type"] == "git" and not (template_source.get("url") or "").strip():
@@ -283,29 +286,72 @@ def _format_age(synced_at):
 
 
 def cmd_attach(args):
-    """Attach to or create a project's tmux session."""
+    """Attach to or create a tmux session for a project, or a plain shell
+    for a machine.
+
+    Project/template/machine names share one global namespace (enforced at
+    creation time), so a given name resolves to at most one of the three —
+    checked project-first, so an existing project always keeps working even
+    in the rare case an older config already has a same-named machine (the
+    uniqueness check is forward-only, not retroactive).
+    """
     name = args.name
-    project = require_project(name)
+    project = get_project(name) or find_template_as_project(name)
+
+    if project:
+        cfg = load_config()
+        machine = get_machine(cfg, project["machine"])
+        is_remote = is_remote_machine(machine)
+        template_name = get_project_template_name(project)
+        template_metadata = get_template_metadata(machine, project["machine"], template_name)
+        startup_command = build_project_bootstrap(
+            project, project["machine"], template_metadata, is_remote, machine=machine
+        )
+
+        tmux_cmd = (
+            f"tmux set-option -g mouse on \\; new-session -A -s {shlex.quote(name)} -c {shlex.quote(project['path'])} "
+            f"bash -lc {shlex.quote(startup_command)}"
+        )
+
+        if is_remote:
+            ssh_interactive(machine, tmux_cmd)
+        else:
+            project_path = str(Path(project["path"]).expanduser())
+            local_tmux_session(name, project_path, startup_command)
+        return
 
     cfg = load_config()
-    machine = get_machine(cfg, project["machine"])
+    if name in cfg.get("machines", {}):
+        _attach_machine_shell(cfg, name)
+        return
+
+    err(f"'{name}' not found as a project or a machine. Run 'colette list' or 'colette config list' to see what's available.")
+
+
+def _attach_machine_shell(cfg, machine_name):
+    """Attach to or create a dedicated tmux shell session for a machine —
+    no project/template context, just a plain shell in its projects_dir."""
+    machine = cfg["machines"][machine_name]
     is_remote = is_remote_machine(machine)
-    template_name = get_project_template_name(project)
-    template_metadata = get_template_metadata(machine, project["machine"], template_name)
-    startup_command = build_project_bootstrap(
-        project, project["machine"], template_metadata, is_remote, machine=machine
-    )
+    cwd = machine.get("projects_dir") or "~"
+    tmux_session_name = f"{machine_name}-shell"
 
-    tmux_cmd = (
-        f"tmux set-option -g mouse on \\; new-session -A -s {shlex.quote(name)} -c {shlex.quote(project['path'])} "
-        f"bash -lc {shlex.quote(startup_command)}"
-    )
-
-    if is_remote:
-        ssh_interactive(machine, tmux_cmd)
+    sessions = get_sessions(machine, is_remote)
+    if tmux_session_name in sessions:
+        if is_remote:
+            ssh_interactive(machine, f"tmux set-option -g mouse on \\; attach-session -t {shlex.quote(tmux_session_name)}")
+        else:
+            local_tmux_session(tmux_session_name, cwd, "exec bash")
     else:
-        project_path = str(Path(project["path"]).expanduser())
-        local_tmux_session(name, project_path, startup_command)
+        if is_remote:
+            tmux_cmd = (
+                f"tmux set-option -g mouse on \\; new-session -A -s {shlex.quote(tmux_session_name)} "
+                f"-c {shlex.quote(cwd)} bash -lc {shlex.quote('exec bash')}"
+            )
+            ssh_interactive(machine, tmux_cmd)
+        else:
+            local_cwd = str(Path(cwd).expanduser())
+            local_tmux_session(tmux_session_name, local_cwd, "exec bash")
 
 
 def cmd_ide(args):
@@ -410,6 +456,9 @@ def cmd_link(args):
 
     if name in all_template_names():
         err(f"'{name}' is already used as a template name.")
+
+    if name in cfg.get("machines", {}):
+        err(f"'{name}' is already used as a machine name.")
 
     if is_remote:
         result = ssh_run(machine, f"test -d {shlex.quote(path)} && echo ok")

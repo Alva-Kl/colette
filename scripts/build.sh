@@ -4,8 +4,24 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BETA_BUILD="$ROOT_DIR/build/beta/colette"
 PROD_BUILD="$ROOT_DIR/build/prod/colette"
-MODE="${1:-beta}"
 PYTHON_BIN="${PYTHON:-python3}"
+
+MODE="beta"
+BUMP=0
+for arg in "$@"; do
+  case "$arg" in
+    beta|prod|promote)
+      MODE="$arg"
+      ;;
+    --bump)
+      BUMP=1
+      ;;
+    *)
+      echo "Usage: ./scripts/build.sh [beta|prod] [--bump]" >&2
+      exit 1
+      ;;
+  esac
+done
 
 _bump_patch_version() {
   local init_file="$ROOT_DIR/colette_cli/__init__.py"
@@ -51,7 +67,9 @@ promote_beta() {
     exit 1
   fi
 
-  _bump_patch_version
+  if [[ "$BUMP" -eq 1 ]]; then
+    _bump_patch_version
+  fi
   mkdir -p "$(dirname "$PROD_BUILD")"
   cp "$BETA_BUILD" "$PROD_BUILD"
   chmod +x "$PROD_BUILD"
@@ -64,9 +82,5 @@ case "$MODE" in
     ;;
   prod|promote)
     promote_beta
-    ;;
-  *)
-    echo "Usage: ./scripts/build.sh [beta|prod]" >&2
-    exit 1
     ;;
 esac

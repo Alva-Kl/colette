@@ -69,9 +69,31 @@ tests/
 scripts/
   build.sh                 beta / prod zipapp build
   install.sh               install helper
+sandbox/                   Docker sandbox for end-to-end testing — see "Sandbox" below
 README.md                  End-user documentation
 DEVELOPMENT.md             This file
 ```
+
+---
+
+## Sandbox
+
+`sandbox/` is a Docker-based, fully isolated test environment for exercising
+the real `colette` binary/TUI end-to-end — real fake projects, real fake
+templates, an optional fake SSH remote machine — without ever touching a
+developer's or a deployment host's real `~/.config/colette` or
+`~/colette-projects`. Colette's config dir is hardcoded to
+`Path.home() / ".config" / "colette"` (`utils/config.py`) with no env
+override, so a container's own `$HOME` is the isolation mechanism; the repo
+is bind-mounted read-write into the `sandbox` container so edits to
+`colette_cli/*.py` are picked up immediately (rebuild the zipapp with
+`./scripts/build.sh` inside the container, no image rebuild needed) —
+`sandbox/README.md` has the full quick-start. `sandbox/harness.py` drives
+`colette tui` over a real pty with scripted keystrokes (including ESC) and
+flags a run as crashed if an unhandled Python traceback shows up in the
+output — useful for regression-testing the TUI's crash-safety behavior
+(see the "TUI leaf actions"/"TUI multi-field forms" rows in "Coding
+conventions" above) without a human at the keyboard.
 
 ---
 
@@ -88,7 +110,20 @@ Machine entries come in two shapes: the machine's own definition(s)
 (`type: "local"`, full data), and connection stubs for known remote
 machines (`type: "ssh"`, connection info only — no `projects_dir`/
 `templates`, since that's the remote's own business, reachable only via the
-read-only cache described below).
+read-only cache described below). A connection stub *can* still carry its
+own `templates` list (the older push model: author hook scripts locally via
+`add-template`/`edit-hook`, which get pushed to the remote — see "Hook
+resolution and pushing to remotes" below); the two sources are merged by
+`list_creatable_templates`/`list_creatable_template_names`/
+`get_creatable_template` (`template/registry.py`) wherever a template needs
+to be *resolved for use* (`cmd_create`, the TUI's "Create project" picker,
+`all_template_names`'s namespace check) — local entries win on a name
+collision. Everywhere else (listing/editing/removing a machine's own
+configured templates) still reads `machine["templates"]` directly via
+`normalize_machine_templates`/`list_machine_template_names`/
+`get_machine_template`, deliberately untouched by the cache, since mutating
+a cache-derived entry would incorrectly persist read-only remote data as if
+locally owned.
 
 ```json
 {
@@ -158,22 +193,6 @@ rename time, never written here.
 always names one of this config's own `type: "local"` entries — never a
 remote connection stub.
 
-### `templates.json`
-```json
-{
-  "templates": [
-    {
-      "name": "my-tmpl",
-      "description": "A description",
-      "params": { "ENV": "dev", "PORT": "8080" }
-    }
-  ]
-}
-```
-
-Legacy metadata-only fallback — the primary source of template definitions
-is the `templates` list embedded in a machine's own `config.json` entry.
-
 ### `cache/<machine>.json` — read-only remote cache
 
 Populated by `colette config sync [machine]`, one file per known remote
@@ -208,13 +227,15 @@ fresh over SSH at execution time (see the hook system section below).
 
 ```
 ~/.config/colette/
-  templates/
-    <template-name>/
-      .oncreate    (chmod 755, bash)
-      .onstart     (chmod 755, bash)
-      .onstop      (chmod 755, bash)
-      .onlogs      (chmod 755, bash)
-      .coletterc   (chmod 644, sourced — not executed)
+  machines/
+    <machine-name>/
+      templates/
+        <template-name>/
+          .oncreate    (chmod 755, bash)
+          .onstart     (chmod 755, bash)
+          .onstop      (chmod 755, bash)
+          .onlogs      (chmod 755, bash)
+          .coletterc   (chmod 644, sourced — not executed)
   projects/
     <project-name>/
       .oncreate    (same filenames — project-specific overrides)
@@ -230,19 +251,17 @@ Resolution differs by whether the project's machine is local or remote —
 pre-fetched `remote_hooks` dict is supplied:
 
 1. **Local resolution order** (`remote_hooks=None`): first checks the
-   project-specific hook (`projects/<project>/.<hook>`), then the
-   machine-scoped template override (`machines/<machine>/templates/<template>/.<hook>`),
-   then falls back to the shared template hook (`templates/<template>/.<hook>`).
+   project-specific hook (`projects/<project>/.<hook>`), then falls back to
+   the machine-scoped template hook (`machines/<machine>/templates/<template>/.<hook>`).
    A hook is only "effective" if it contains at least one non-comment,
-   non-shebang line (`_has_effective_script`). All three tiers are read
-   straight off local disk.
+   non-shebang line (`_has_effective_script`). Both tiers are read straight
+   off local disk.
 
-2. **Remote resolution order** (`remote_hooks` supplied): collapses to two
-   tiers — project hook, then template hook — both read from a dict
-   pre-fetched over SSH by `ssh_read_hook_files` (`utils/ssh.py`), which
-   fetches every hook name's project- and template-level content in **one**
-   SSH round-trip (a delimited `cat` loop), not one round-trip per hook.
-   There's no separate machine-override tier remotely: the remote's own
+2. **Remote resolution order** (`remote_hooks` supplied): also two tiers —
+   project hook, then template hook — both read from a dict pre-fetched over
+   SSH by `ssh_read_hook_files` (`utils/ssh.py`), which fetches every hook
+   name's project- and template-level content in **one** SSH round-trip (a
+   delimited `cat` loop), not one round-trip per hook. The remote's own
    `templates/<template>/.<hook>` *is* already the machine-specific,
    already-flattened copy — see `push_template_hooks` below. Remote hook
    content is never cached locally; it's fetched fresh on every hook
@@ -260,7 +279,8 @@ pre-fetched `remote_hooks` dict is supplied:
 
 4. **coletterc**: `_prepend_coletterc` prepends the resolved coletterc content
    before every hook command — `run_template_hook` and `build_hook_command` both
-   call it, threading the same `remote_hooks` dict through so coletterc and
+   call it, threading the same `remote_hooks` dict *and* `machine_name` through
+   (required so local resolution can find the machine-scoped tier) so coletterc and
    the main hook share one SSH fetch. When a project-level coletterc is
    active, `SUPER` is set before the coletterc content so it can inherit
    from the template coletterc.
@@ -359,12 +379,21 @@ a live SSH round-trip just because a project happens to be missing.
 
 ### Build pipeline
 
+A `Makefile` at the repo root wraps these — `make build-beta`, `make
+build-prod`, `make build-prod-release`, `make install` — but the raw
+commands are:
+
 ```bash
-# 1. Build the beta zipapp (auto-bumps the patch version in __init__.py and pyproject.toml)
+# 1. Build the beta zipapp
 ./scripts/build.sh
 
-# 2. Promote beta to prod when ready to release
+# 2. Promote beta to prod — plain, no version change (safe to run any time,
+#    e.g. after every edit while iterating in the sandbox)
 ./scripts/build.sh prod
+
+# 2b. ...or cut an actual release: promote AND bump the patch version in
+#     __init__.py/pyproject.toml (only happens with this flag — never implicit)
+./scripts/build.sh prod --bump
 
 # 3. Install prod binary to PATH for local use
 ./scripts/install.sh          # copies build/prod/colette → ~/.local/bin/colette
@@ -383,7 +412,9 @@ copied to remote machines and the file that `colette --version` reports.
 
 ### For developers
 
-**Before testing against a remote machine**, always build and promote:
+**Before testing against a remote machine**, always build and promote
+(inside `sandbox/`'s container — never on the host, see "Running tests"
+below):
 
 ```bash
 ./scripts/build.sh && ./scripts/build.sh prod
@@ -422,6 +453,7 @@ Follow **every** step. Missing any one step is a bug.
 - [ ] **Parser config description**: update the `description` string of the `config` sub-parser
 - [ ] **README.md**: add a `#### colette config <sub>` section
 - [ ] **Tests**: add test cases in `tests/test_config_commands.py`
+- [ ] **TUI action**: wire the same capability into the relevant `tui/screens.py` screen, per the CLI/TUI-parity convention below (unless the task explicitly scopes it to CLI-only)
 
 ---
 
@@ -437,6 +469,9 @@ Follow **every** step. Missing any one step is a bug.
 | Thin command functions | Command handlers should orchestrate helpers; keep business logic out of `main.py`. |
 | Imports | Import functions from `colette_cli.utils.*`; avoid relative imports across packages. |
 | Naming | `cmd_<name>` for top-level commands, `cmd_config_<sub>` for config sub-commands |
+| CLI/TUI parity | Every new user-facing capability gets both a CLI command and a TUI action, calling the same backend function from both, unless the task explicitly scopes it to one surface. |
+| TUI leaf actions | Never call a `cmd_*`/`cmd_config_*` function directly from a `tui/screens.py` action — always go through `_popup`/`_async_popup`/`_suspend` so an `err()`-raised `SystemExit` (or any other exception) surfaces as a friendly popup instead of relying solely on the backstop below. `MenuItem.run()` (`tui/menu.py`) also catches any exception that slips through, so a forgotten wrapper can no longer crash the whole TUI — but it only shows a raw traceback, not a nice message. |
+| TUI multi-field forms | Prefer the `form()` primitive (`tui/forms.py`) over sequential `ask()` calls for any flow with more than one field — it shows every field at once, moves focus with arrows/Tab, and only ESC/Cancel aborts the whole thing (see `_add_machine_interactive`/`_edit_machine_interactive`/`_add_template_interactive`/`_edit_template_interactive`/`_create_project_interactive`/`_link_directory_interactive`). For the rare remaining spot that still chains multiple `ask()` calls (e.g. `template_param_items`'s `_add_param`), guard every one with `if result is None: return` before falling back to a default — never `ask(...) or default` — otherwise cancelling (ESC) a *non-first* field silently substitutes the default and keeps going instead of aborting the whole action. |
 
 ---
 
@@ -531,17 +566,22 @@ with pytest.raises(SystemExit):
 
 ### Running tests
 
-Install dev dependencies first:
+**Never run `pytest`/`python -m pytest` directly on a host machine** — always
+run the suite inside `sandbox/`'s `sandbox` container, which already has
+`requirements-dev.txt` installed. `make test` does this (brings the sandbox
+up if needed, waits for it to finish initializing, then runs the suite); the
+raw command is:
 
 ```bash
-pip install -r requirements-dev.txt
+docker compose -f sandbox/docker-compose.yml up -d
+docker compose -f sandbox/docker-compose.yml exec sandbox \
+  python3 -m pytest tests/ -v
 ```
 
-Then run:
-
-```bash
-python -m pytest tests/ -v
-```
+The repo is bind-mounted read-write into that container, so this always runs
+against the current working tree, including uncommitted changes — no image
+rebuild needed between runs. See `sandbox/README.md` for the full sandbox
+setup (also used for real end-to-end TUI testing, not just unit tests).
 
 `pyproject.toml` defines project metadata and the `colette` entry-point script.
 `requirements-dev.txt` lists development-only dependencies (pytest).
@@ -555,6 +595,6 @@ python -m pytest tests/ -v
 - [ ] `main.py` handlers dict and imports updated for new top-level commands
 - [ ] Parser description strings updated (both banner and sub-parser descriptions)
 - [ ] Tests written for all new behavior
-- [ ] `python -m pytest tests/` passes with zero failures
+- [ ] `python -m pytest tests/` passes with zero failures (run inside `sandbox/`'s container, never on the host)
 - [ ] No logic duplicated across command modules (use `utils/`)
 - [ ] No direct `sys.exit` in command handlers — always use `err()`

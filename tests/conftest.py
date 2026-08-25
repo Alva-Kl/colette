@@ -25,8 +25,6 @@ def tmp_config(tmp_path, monkeypatch):
     """Redirect all colette config paths to a temporary directory."""
     config_dir = tmp_path / ".config" / "colette"
     config_dir.mkdir(parents=True)
-    templates_dir = config_dir / "templates"
-    templates_dir.mkdir()
     projects_dir = config_dir / "projects"
     projects_dir.mkdir()
 
@@ -40,8 +38,6 @@ def tmp_config(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg_mod, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(cfg_mod, "CONFIG_FILE", config_dir / "config.json")
     monkeypatch.setattr(cfg_mod, "PROJECTS_FILE", config_dir / "projects.json")
-    monkeypatch.setattr(cfg_mod, "TEMPLATES_FILE", config_dir / "templates.json")
-    monkeypatch.setattr(cfg_mod, "TEMPLATE_SCRIPTS_DIR", templates_dir)
     monkeypatch.setattr(cfg_mod, "PROJECT_HOOKS_DIR", projects_dir)
     monkeypatch.setattr(cfg_mod, "HOOK_FAILURES_FILE", config_dir / "hook-failures.json")
     monkeypatch.setattr(cfg_mod, "MACHINE_SCRIPTS_DIR", machines_dir)
@@ -56,10 +52,6 @@ def write_config(config_dir, cfg):
 
 def write_projects(config_dir, projects):
     (config_dir / "projects.json").write_text(json.dumps(projects))
-
-
-def write_templates(config_dir, templates):
-    (config_dir / "templates.json").write_text(json.dumps(templates))
 
 
 def write_machine_cache(config_dir, machine_name, data):

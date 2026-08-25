@@ -1,8 +1,11 @@
 """Reusable arrow-key menu widget for the Colette TUI."""
 
 import curses
+import time
 
 from . import state
+
+TOAST_SECONDS = 4.0
 
 
 class _Quit:
@@ -47,7 +50,14 @@ class MenuItem:
 
     def run(self):
         if self._action:
-            self._action()
+            try:
+                self._action()
+            except SystemExit:
+                pass
+            except Exception:
+                import traceback
+                from .forms import show_output
+                show_output(traceback.format_exc(), title="Error")
 
 
 class Menu:
@@ -64,6 +74,8 @@ class Menu:
         self._items = items
         self._breadcrumb = breadcrumb
         self._cursor = 0
+        self._toast = None
+        self._toast_until = 0.0
         # Start on the first selectable item
         if items and not items[0].selectable:
             self._cursor = self._next_selectable(0, 1)
@@ -138,6 +150,16 @@ class Menu:
             header = logo.center(w - 2)
         else:
             header = f"  {self._breadcrumb}  "
+
+        # ── Toast: pop any notifications appended since the last render ────
+        with state.notifications_lock:
+            new_notifs = state.notifications[state.last_seen_notification_index:]
+            state.last_seen_notification_index = len(state.notifications)
+        if new_notifs:
+            self._toast = new_notifs[-1]
+            self._toast_until = time.time() + TOAST_SECONDS
+        elif self._toast is not None and time.time() >= self._toast_until:
+            self._toast = None
 
         # Running indicator appended to header when background tasks are active
         with state.running_tasks_lock:
@@ -236,6 +258,17 @@ class Menu:
             try:
                 self._scr.addstr(blank_row, 1, self._BOX_V)
                 self._scr.addstr(blank_row, w - 2, " " + self._BOX_V)
+            except curses.error:
+                pass
+
+        # ── Toast overlay (row h-2, drawn last so it overlays the bottom
+        # border on this same frame) ────────────────────────────────────────
+        if self._toast is not None and h >= 5:
+            prefix = "✓" if self._toast.success else "✗"
+            text = f" {prefix} {self._toast.label} "
+            col = max(1, (w - len(text)) // 2)
+            try:
+                self._scr.addstr(h - 2, col, text[: max(0, w - col - 1)], curses.A_REVERSE | curses.A_BOLD)
             except curses.error:
                 pass
 

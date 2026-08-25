@@ -99,7 +99,7 @@ def build_parser():
             "Runs the 'onupdate' hook defined for a template without a project context.\n"
             "Use this to update the template itself (e.g. pull latest changes).\n\n"
             "The hook file is at:\n"
-            "  ~/.config/colette/templates/<template>/.onupdate"
+            "  ~/.config/colette/machines/<machine>/templates/<template>/.onupdate"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -141,6 +141,10 @@ def build_parser():
     rntp.add_argument("machine_name", help="Machine name")
     rntp.add_argument("old_name", help="Current template name")
     rntp.add_argument("new_name", help="New template name")
+
+    rnmp = csub.add_parser("rename-machine", help="Rename a machine")
+    rnmp.add_argument("old_name", help="Current machine name")
+    rnmp.add_argument("new_name", help="New machine name")
 
     crp = sub.add_parser("create", help="Create a new project from a template")
     crp.add_argument("name", help="Project name (lowercase letters, numbers, hyphens)")
@@ -184,8 +188,8 @@ def build_parser():
         help="Project name (default: directory basename)",
     )
 
-    atp = sub.add_parser("attach", help="Attach to or create project tmux session")
-    atp.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
+    atp = sub.add_parser("attach", help="Attach to or create a tmux session for a project or a machine")
+    atp.add_argument("name", nargs="?", default=None, help="Project or machine name (default: project detected from current directory)")
 
     idp = sub.add_parser("ide", help="Open project in the configured IDE (local or SSH)")
     idp.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")

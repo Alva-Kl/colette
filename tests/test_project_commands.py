@@ -227,7 +227,7 @@ class TestCmdDelete:
         """The ondelete hook executes before project files are removed."""
         from colette_cli.utils.config import (
             save_config, save_local_projects, load_projects,
-            write_machine_template_hook, save_templates,
+            write_machine_template_hook,
         )
         from colette_cli.project.commands import cmd_delete
 
@@ -247,7 +247,6 @@ class TestCmdDelete:
             "default_machine": "local",
         }
         save_config(cfg)
-        save_templates({"templates": [{"name": "tmpl", "params": {}}]})
         save_local_projects([make_project("proj", path=str(project_dir), template="tmpl")])
 
         args = MagicMock()
@@ -263,7 +262,7 @@ class TestCmdDelete:
 class TestCmdCreate:
     def test_oncreate_hook_runs_on_create(self, tmp_config, tmp_path):
         """The oncreate hook actually executes when cmd_create is called."""
-        from colette_cli.utils.config import save_config, load_projects, write_machine_template_hook, save_templates
+        from colette_cli.utils.config import save_config, load_projects, write_machine_template_hook
         from colette_cli.project.commands import cmd_create
         marker = tmp_path / "marker.txt"
         write_machine_template_hook("local", "tmpl", "oncreate", f"#!/usr/bin/env bash\necho oncreate > {marker}")
@@ -280,7 +279,6 @@ class TestCmdCreate:
             "default_machine": "local",
         }
         save_config(cfg)
-        save_templates({"templates": [{"name": "tmpl", "params": {}}]})
         args = MagicMock()
         args.name = "my-project"
         args.machine = "local"
@@ -393,6 +391,50 @@ class TestCmdCreate:
         assert (projects_dir / "scratch-project").is_dir()
         projects = load_projects()
         assert any(p["name"] == "scratch-project" and p["template"] is None for p in projects)
+
+    def test_create_remote_with_cache_only_template(self, tmp_config):
+        """A template never configured on this controller, only known via the
+        remote's own sync cache, can still be used to create a new project —
+        its type/path is resolved on the remote itself."""
+        from colette_cli.utils.config import save_config, save_machine_cache
+        from colette_cli.project.commands import cmd_create
+
+        save_config({
+            "machines": {
+                "remote": {
+                    "type": "ssh",
+                    "host": "myhost",
+                    "projects_dir": "/home/user/projects",
+                    "templates": [],
+                }
+            },
+            "default_machine": "remote",
+        })
+        save_machine_cache("remote", {
+            "machine": "remote",
+            "synced_at": "2026-01-01T00:00:00Z",
+            "projects_dir": "/home/user",
+            "templates": [{"name": "docker-deployed", "type": "directory", "path": "~/tmpl-source"}],
+            "projects": [],
+        })
+        args = MagicMock()
+        args.name = "new-remote-project"
+        args.machine = "remote"
+        args.template = "docker-deployed"
+
+        no_exists = MagicMock(stdout="", returncode=0)
+        source_ok = MagicMock(stdout="ok", returncode=0)
+        cp_ok = MagicMock(stdout="", returncode=0)
+
+        with patch("colette_cli.project.commands.ssh_run", side_effect=[no_exists, source_ok, cp_ok]) as mock_ssh, \
+             patch("colette_cli.project.commands.run_template_hook", return_value=True), \
+             patch("colette_cli.project.commands.write_project_record") as mock_write:
+            cmd_create(args)
+
+        cp_call = mock_ssh.call_args_list[2][0][1]
+        assert "~/tmpl-source" in cp_call
+        pushed_project = mock_write.call_args[0][2]
+        assert pushed_project["template"] == "docker-deployed"
 
 
 class TestCmdAgent:
@@ -603,6 +645,165 @@ class TestCmdIde:
         mock_run.assert_called_once_with(["zed", str(project_path)])
 
 
+class TestCmdAttach:
+    def test_local_project_opens_local_tmux_session(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_attach
+        project_path = tmp_path / "my-project"
+        project_path.mkdir()
+        cfg = {"machines": {"local": make_local_machine()}, "default_machine": "local"}
+        save_config(cfg)
+        save_local_projects([make_project("my-project", path=str(project_path))])
+        args = MagicMock()
+        args.name = "my-project"
+
+        with patch("colette_cli.project.commands.local_tmux_session") as mock_tmux:
+            cmd_attach(args)
+
+        mock_tmux.assert_called_once()
+        assert mock_tmux.call_args[0][0] == "my-project"
+        assert mock_tmux.call_args[0][1] == str(project_path)
+
+    def test_remote_project_uses_ssh_interactive(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_attach
+        cfg = {
+            "machines": {"remote": {"type": "ssh", "host": "user@host", "projects_dir": "/home/user"}},
+            "default_machine": "remote",
+        }
+        save_config(cfg)
+        save_local_projects([make_project("my-project", machine="remote", path="/home/user/my-project")])
+        args = MagicMock()
+        args.name = "my-project"
+
+        with patch("colette_cli.project.commands.ssh_interactive") as mock_ssh:
+            cmd_attach(args)
+
+        mock_ssh.assert_called_once()
+        machine_arg, tmux_cmd = mock_ssh.call_args[0]
+        assert machine_arg["host"] == "user@host"
+        assert "my-project" in tmux_cmd
+        assert "/home/user/my-project" in tmux_cmd
+
+    def test_project_name_takes_precedence_over_a_same_named_machine(self, tmp_config, tmp_path):
+        """Project/template/machine names share one namespace enforced at
+        creation time, but for a pre-existing config that predates the
+        check, attach must resolve project-first (never a regression for
+        the (rare) existing collision case)."""
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.project.commands import cmd_attach
+        project_path = tmp_path / "dupe-name"
+        project_path.mkdir()
+        cfg = {
+            "machines": {
+                "local": make_local_machine(),
+                "dupe-name": {"type": "local", "projects_dir": "/tmp"},
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        save_local_projects([make_project("dupe-name", path=str(project_path))])
+        args = MagicMock()
+        args.name = "dupe-name"
+
+        with patch("colette_cli.project.commands.local_tmux_session") as mock_tmux, \
+             patch("colette_cli.project.commands.get_sessions") as mock_sessions:
+            cmd_attach(args)
+
+        mock_tmux.assert_called_once()
+        assert mock_tmux.call_args[0][1] == str(project_path)
+        mock_sessions.assert_not_called()  # machine branch never entered
+
+    def test_errors_when_name_matches_neither_project_nor_machine(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.project.commands import cmd_attach
+        save_config({"machines": {"local": make_local_machine()}, "default_machine": "local"})
+        args = MagicMock()
+        args.name = "ghost"
+        with pytest.raises(SystemExit):
+            cmd_attach(args)
+
+
+class TestCmdAttachMachine:
+    _LOCAL_CFG = {
+        "machines": {"local": {"type": "local", "projects_dir": "/tmp/projects"}},
+        "default_machine": "local",
+    }
+    _REMOTE_CFG = {
+        "machines": {
+            "myremote": {
+                "type": "ssh",
+                "host": "user@remotehost",
+                "projects_dir": "/home/user/projects",
+            }
+        },
+        "default_machine": "myremote",
+    }
+
+    def test_local_no_existing_session_creates_with_expanded_cwd(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.project.commands import cmd_attach
+        save_config(self._LOCAL_CFG)
+        args = MagicMock()
+        args.name = "local"
+        with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
+             patch("colette_cli.project.commands.local_tmux_session") as mock_local:
+            cmd_attach(args)
+        mock_local.assert_called_once_with("local-shell", "/tmp/projects", "exec bash")
+
+    def test_local_existing_session_still_attaches(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.project.commands import cmd_attach
+        save_config(self._LOCAL_CFG)
+        args = MagicMock()
+        args.name = "local"
+        with patch("colette_cli.project.commands.get_sessions", return_value={"local-shell"}), \
+             patch("colette_cli.project.commands.local_tmux_session") as mock_local:
+            cmd_attach(args)
+        mock_local.assert_called_once_with("local-shell", "/tmp/projects", "exec bash")
+
+    def test_local_falls_back_to_home_when_no_projects_dir(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.project.commands import cmd_attach
+        save_config({"machines": {"local": {"type": "local"}}, "default_machine": "local"})
+        args = MagicMock()
+        args.name = "local"
+        with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
+             patch("colette_cli.project.commands.local_tmux_session") as mock_local:
+            cmd_attach(args)
+        cwd = mock_local.call_args[0][1]
+        assert cwd == str(Path("~").expanduser())
+
+    def test_remote_no_existing_session_creates_over_ssh(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.project.commands import cmd_attach
+        save_config(self._REMOTE_CFG)
+        args = MagicMock()
+        args.name = "myremote"
+        with patch("colette_cli.project.commands.get_sessions", return_value=set()), \
+             patch("colette_cli.project.commands.ssh_interactive") as mock_ssh:
+            cmd_attach(args)
+        mock_ssh.assert_called_once()
+        machine_arg, cmd_arg = mock_ssh.call_args[0]
+        assert machine_arg["host"] == "user@remotehost"
+        assert "new-session -A -s myremote-shell" in cmd_arg
+        assert "/home/user/projects" in cmd_arg
+
+    def test_remote_existing_session_attaches(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.project.commands import cmd_attach
+        save_config(self._REMOTE_CFG)
+        args = MagicMock()
+        args.name = "myremote"
+        with patch("colette_cli.project.commands.get_sessions", return_value={"myremote-shell"}), \
+             patch("colette_cli.project.commands.ssh_interactive") as mock_ssh:
+            cmd_attach(args)
+        mock_ssh.assert_called_once()
+        _machine_arg, cmd_arg = mock_ssh.call_args[0]
+        assert "attach-session -t myremote-shell" in cmd_arg
+        assert "new-session" not in cmd_arg
+
+
 class TestCwdAutoDetect:
     """Integration tests: commands auto-detect project name from cwd."""
 
@@ -624,10 +825,16 @@ class TestCwdAutoDetect:
         orig = os.getcwd()
         try:
             os.chdir(str(project_path))
-            with patch("colette_cli.project.commands.local_tmux_session"):
+            with patch("colette_cli.project.commands.local_tmux_session") as mock_tmux:
                 cmd_attach(args)
         finally:
             os.chdir(orig)
+
+        mock_tmux.assert_called_once()
+        call_args = mock_tmux.call_args
+        assert call_args[0][0] == "my-project"
+        assert call_args[0][1] == str(project_path)
+        assert "exec bash" in call_args[0][2]
 
     def test_ide_resolves_from_cwd(self, tmp_config, tmp_path):
         from colette_cli.project.commands import cmd_ide

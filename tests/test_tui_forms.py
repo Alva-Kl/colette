@@ -375,3 +375,222 @@ class TestAskChoices:
             result = ask("Pick", choices=["alpha", "beta"])
 
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# form()
+# ---------------------------------------------------------------------------
+
+class TestForm:
+    def test_plain_input_fallback_collects_all_fields(self):
+        import colette_cli.tui.state as state
+        state.stdscr = None
+        from colette_cli.tui.forms import form, FormField
+
+        fields = [
+            FormField(name="name", label="Name"),
+            FormField(name="type", label="Type", kind="choice", choices=["local", "ssh"], default="local"),
+        ]
+        with patch("builtins.input", side_effect=["myname", "2"]):
+            result = form(fields)
+
+        assert result == {"name": "myname", "type": "ssh"}
+
+    def test_plain_input_fallback_keeps_default_on_empty(self):
+        import colette_cli.tui.state as state
+        state.stdscr = None
+        from colette_cli.tui.forms import form, FormField
+
+        fields = [FormField(name="name", label="Name", default="fallback")]
+        with patch("builtins.input", return_value=""):
+            result = form(fields)
+
+        assert result == {"name": "fallback"}
+
+    def test_plain_input_fallback_reprompts_on_validator_failure(self):
+        import colette_cli.tui.state as state
+        state.stdscr = None
+        from colette_cli.tui.forms import form, FormField
+
+        validator = lambda s: (True, "") if s.isdigit() else (False, "must be a number")
+        fields = [FormField(name="port", label="Port", validator=validator)]
+        with patch("builtins.input", side_effect=["notanumber", "24"]):
+            result = form(fields)
+
+        assert result == {"port": "24"}
+
+    def test_plain_input_fallback_skips_hidden_field(self):
+        import colette_cli.tui.state as state
+        state.stdscr = None
+        from colette_cli.tui.forms import form, FormField
+
+        fields = [
+            FormField(name="type", label="Type", kind="choice", choices=["local", "ssh"], default="local"),
+            FormField(name="host", label="Host", visible_if=lambda v: v["type"] == "ssh"),
+        ]
+        with patch("builtins.input", return_value=""):
+            result = form(fields)
+
+        assert result == {"type": "local", "host": ""}
+
+    def test_curses_submit_returns_all_field_values(self):
+        """Type into a text field, cycle a choice field, then submit."""
+        import colette_cli.tui.state as state
+        scr = _make_stdscr()
+        state.stdscr = scr
+
+        mock_win = MagicMock()
+        mock_win.getmaxyx.return_value = (24, 80)
+        key_seq = [
+            ord("a"), ord("b"), ord("c"),   # type "abc" into "name" (focus 0)
+            curses.KEY_DOWN,                 # move focus to "type" (choice, focus 1)
+            curses.KEY_RIGHT,                # cycle local -> ssh
+            curses.KEY_DOWN,                 # move focus to Submit (focus 2)
+            ord("\n"),                       # submit
+        ]
+        mock_win.getch.side_effect = key_seq
+
+        from colette_cli.tui.forms import form, FormField
+        fields = [
+            FormField(name="name", label="Name"),
+            FormField(name="type", label="Type", kind="choice", choices=["local", "ssh"], default="local"),
+        ]
+        with patch("curses.newwin", return_value=mock_win), \
+             patch("curses.curs_set"), \
+             patch("colette_cli.tui.forms._restore"):
+            result = form(fields)
+
+        assert result == {"name": "abc", "type": "ssh"}
+
+    def test_curses_esc_cancels(self):
+        import colette_cli.tui.state as state
+        scr = _make_stdscr()
+        state.stdscr = scr
+
+        mock_win = MagicMock()
+        mock_win.getmaxyx.return_value = (24, 80)
+        mock_win.getch.side_effect = [27]
+
+        from colette_cli.tui.forms import form, FormField
+        fields = [FormField(name="name", label="Name")]
+        with patch("curses.newwin", return_value=mock_win), \
+             patch("curses.curs_set"), \
+             patch("colette_cli.tui.forms._restore"):
+            result = form(fields)
+
+        assert result is None
+
+    def test_curses_cancel_row_cancels(self):
+        import colette_cli.tui.state as state
+        scr = _make_stdscr()
+        state.stdscr = scr
+
+        mock_win = MagicMock()
+        mock_win.getmaxyx.return_value = (24, 80)
+        key_seq = [
+            curses.KEY_DOWN,   # focus 0 (name) -> Submit
+            curses.KEY_DOWN,   # Submit -> Cancel
+            ord("\n"),          # activate Cancel
+        ]
+        mock_win.getch.side_effect = key_seq
+
+        from colette_cli.tui.forms import form, FormField
+        fields = [FormField(name="name", label="Name", default="x")]
+        with patch("curses.newwin", return_value=mock_win), \
+             patch("curses.curs_set"), \
+             patch("colette_cli.tui.forms._restore"):
+            result = form(fields)
+
+        assert result is None
+
+    def test_curses_conditional_field_visibility(self):
+        """A field with visible_if only appears once the controlling field's
+        value satisfies it — and its own field is skippable when hidden."""
+        import colette_cli.tui.state as state
+        scr = _make_stdscr()
+        state.stdscr = scr
+
+        mock_win = MagicMock()
+        mock_win.getmaxyx.return_value = (24, 80)
+        key_seq = [
+            curses.KEY_RIGHT,   # cycle "type" local -> ssh (focus 0, choice) — "host" becomes visible
+            curses.KEY_DOWN,    # move to "host" (now visible, focus 1)
+            ord("h"), ord("i"),
+            curses.KEY_DOWN,    # move to Submit (focus 2)
+            ord("\n"),
+        ]
+        mock_win.getch.side_effect = key_seq
+
+        from colette_cli.tui.forms import form, FormField
+        fields = [
+            FormField(name="type", label="Type", kind="choice", choices=["local", "ssh"], default="local"),
+            FormField(name="host", label="Host", visible_if=lambda v: v["type"] == "ssh"),
+        ]
+        with patch("curses.newwin", return_value=mock_win), \
+             patch("curses.curs_set"), \
+             patch("colette_cli.tui.forms._restore"):
+            result = form(fields)
+
+        assert result == {"type": "ssh", "host": "hi"}
+
+    def test_curses_validator_failure_keeps_form_open(self):
+        """Submitting with an invalid field re-focuses it and keeps the form
+        open instead of returning; fixing the value and resubmitting works."""
+        import colette_cli.tui.state as state
+        scr = _make_stdscr()
+        state.stdscr = scr
+
+        mock_win = MagicMock()
+        mock_win.getmaxyx.return_value = (24, 80)
+        key_seq = [
+            curses.KEY_DOWN,           # move from "port" (focus 0) to Submit (focus 1)
+            ord("\n"),                  # try to submit with default "" -> fails validator
+            ord("2"), ord("4"),         # NOTE: focus was snapped back to "port" (focus 0) on failure
+            curses.KEY_DOWN,           # move to Submit again
+            ord("\n"),                  # submit successfully this time
+        ]
+        mock_win.getch.side_effect = key_seq
+
+        from colette_cli.tui.forms import form, FormField
+        validator = lambda s: (True, "") if s.isdigit() else (False, "must be a number")
+        fields = [FormField(name="port", label="Port", validator=validator)]
+        with patch("curses.newwin", return_value=mock_win), \
+             patch("curses.curs_set"), \
+             patch("colette_cli.tui.forms._restore"):
+            result = form(fields)
+
+        assert result == {"port": "24"}
+
+    def test_curses_dynamic_choices_depend_on_other_field(self):
+        """A choice field's options can be a callable of the working dict,
+        recomputed live as an earlier field changes."""
+        import colette_cli.tui.state as state
+        scr = _make_stdscr()
+        state.stdscr = scr
+
+        mock_win = MagicMock()
+        mock_win.getmaxyx.return_value = (24, 80)
+        key_seq = [
+            curses.KEY_RIGHT,   # cycle "machine" local -> remote (focus 0)
+            curses.KEY_DOWN,    # move to "template" (focus 1) — its choices depend on "machine"
+            curses.KEY_DOWN,    # move to Submit (focus 2)
+            ord("\n"),
+        ]
+        mock_win.getch.side_effect = key_seq
+
+        from colette_cli.tui.forms import form, FormField
+        templates_by_machine = {"local": ["tmpl-a"], "remote": ["tmpl-b", "tmpl-c"]}
+        fields = [
+            FormField(name="machine", label="Machine", kind="choice", choices=["local", "remote"], default="local"),
+            FormField(
+                name="template", label="Template", kind="choice",
+                choices=lambda v: templates_by_machine[v["machine"]],
+            ),
+        ]
+        with patch("curses.newwin", return_value=mock_win), \
+             patch("curses.curs_set"), \
+             patch("colette_cli.tui.forms._restore"):
+            result = form(fields)
+
+        assert result["machine"] == "remote"
+        assert result["template"] in ("tmpl-b", "tmpl-c")

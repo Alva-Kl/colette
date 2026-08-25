@@ -98,6 +98,9 @@ def _popup(fn):
                 fn(*args, **kwargs)
             except SystemExit:
                 pass
+            except Exception:
+                import traceback
+                print(traceback.format_exc(), file=sys.stderr)
             finally:
                 sys.stdout, sys.stderr = old_out, old_err
         except Exception:
@@ -224,49 +227,85 @@ def notifications_screen_items():
 # ---------------------------------------------------------------------------
 
 def _add_machine_interactive():
-    """Collect machine details via TUI forms and save to config."""
-    from .forms import ask, confirm
-    from colette_cli.template.registry import scaffold_template_hook_files
-
-    name = ask("Machine name")
-    if not name:
-        return
-    name = name.strip()
+    """Collect machine details via a single multi-field form and save to config."""
+    from .forms import form, FormField
 
     cfg = load_config()
-    if name in cfg.get("machines", {}):
+    has_default = bool(cfg.get("default_machine"))
+
+    fields = [
+        FormField(
+            name="name", label="Machine name",
+            validator=lambda s: (True, "") if (
+                s.strip() and s.strip() not in cfg.get("machines", {})
+                and s.strip() not in all_template_names(cfg)
+                and s.strip() not in {p["name"] for p in load_projects()}
+            ) else (False, "name required and must not collide with a machine, template, or project name"),
+        ),
+        FormField(name="type", label="Type", kind="choice", choices=["local", "ssh"], default="local"),
+        FormField(
+            name="host", label="SSH host (user@hostname or alias)",
+            visible_if=lambda v: v["type"] == "ssh",
+            validator=lambda s: (True, "") if s.strip() else (False, "SSH host cannot be empty"),
+        ),
+        FormField(
+            name="port", label="SSH port (empty = default 22)",
+            visible_if=lambda v: v["type"] == "ssh",
+            validator=lambda s: (True, "") if (not s.strip() or s.strip().isdigit())
+                else (False, "Port must be a number"),
+        ),
+        FormField(
+            name="ssh_key", label="SSH private key path (empty = default)",
+            visible_if=lambda v: v["type"] == "ssh",
+        ),
+        FormField(
+            name="colette_path", label="Path to colette binary (empty = skip auto-sync)",
+            visible_if=lambda v: v["type"] == "ssh",
+        ),
+        FormField(
+            name="projects_dir", label="Projects directory (on the target machine)",
+            validator=lambda s: (True, "") if s.strip() else (False, "cannot be empty"),
+        ),
+        FormField(name="add_template", label="Add an initial template?", kind="choice", choices=["no", "yes"], default="no"),
+        FormField(name="template_name", label="Template name", visible_if=lambda v: v["add_template"] == "yes"),
+        FormField(
+            name="template_type", label="Template type", kind="choice",
+            choices=["directory", "git"], default="directory",
+            visible_if=lambda v: v["add_template"] == "yes",
+        ),
+        FormField(
+            name="template_source",
+            label=lambda v: "Template path" if v.get("template_type") == "directory" else "Template git URL",
+            visible_if=lambda v: v["add_template"] == "yes",
+            validator=lambda s: (True, "") if s.strip() else (False, "cannot be empty"),
+        ),
+    ]
+    if has_default:
+        fields.append(FormField(
+            name="set_default", label="Set as the default machine?", kind="choice",
+            choices=["no", "yes"], default="no",
+        ))
+
+    values = form(fields, title="Add machine")
+    if values is None:
         return
 
-    mtype = ask("Type (local/ssh)", default="local") or "local"
-    if mtype not in ("local", "ssh"):
-        mtype = "local"
+    name = values["name"].strip()
+    machine: dict = {"type": values["type"]}
+    if values["type"] == "ssh":
+        machine["host"] = values["host"].strip()
+        if values["port"].strip():
+            machine["port"] = int(values["port"].strip())
+        if values["ssh_key"].strip():
+            machine["ssh_key"] = str(Path(values["ssh_key"].strip()).expanduser())
+        if values["colette_path"].strip():
+            machine["colette_path"] = values["colette_path"].strip()
+    machine["projects_dir"] = values["projects_dir"].strip()
 
-    machine: dict = {"type": mtype}
-
-    if mtype == "ssh":
-        host = ask("SSH host (user@hostname or alias)")
-        if not host:
-            return
-        machine["host"] = host.strip()
-        port = ask("SSH port (leave empty for default 22)") or ""
-        if port.strip():
-            machine["port"] = int(port.strip())
-        key = ask("SSH private key path (leave empty for default)") or ""
-        if key:
-            machine["ssh_key"] = str(Path(key.strip()).expanduser())
-        colette_path = ask("Path to colette binary on this machine (leave empty to skip auto-sync)") or ""
-        if colette_path:
-            machine["colette_path"] = colette_path.strip()
-
-    template_name = ask("Initial template name (leave empty to skip)") or ""
+    template_name = values["template_name"].strip() if values["add_template"] == "yes" else ""
     if template_name:
-        ttype = ask("Template type (directory/git)", default="directory") or "directory"
-        if ttype not in ("directory", "git"):
-            ttype = "directory"
-        source_label = "Template path" if ttype == "directory" else "Template git URL"
-        source = ask(source_label)
-        if not source:
-            return
+        ttype = values["template_type"]
+        source = values["template_source"].strip()
         entry: dict = {"name": template_name, "type": ttype}
         if ttype == "directory":
             entry["path"] = source
@@ -274,15 +313,10 @@ def _add_machine_interactive():
             entry["url"] = source
         machine["templates"] = [entry]
 
-    projects_dir = ask("Projects directory (on the target machine)")
-    if not projects_dir:
-        return
-    machine["projects_dir"] = projects_dir.strip()
-
     cfg.setdefault("machines", {})[name] = machine
-    if not cfg.get("default_machine"):
+    if not has_default:
         cfg["default_machine"] = name
-    elif confirm(f"Set '{name}' as the default machine?", default=False):
+    elif values.get("set_default") == "yes":
         cfg["default_machine"] = name
 
     save_config(cfg)
@@ -291,8 +325,8 @@ def _add_machine_interactive():
 
 
 def _edit_machine_interactive(machine_name):
-    """Edit machine fields via TUI forms and save to config."""
-    from .forms import ask
+    """Edit machine fields via a single multi-field form and save to config."""
+    from .forms import form, FormField
 
     cfg = load_config()
     machine = cfg.get("machines", {}).get(machine_name)
@@ -300,53 +334,95 @@ def _edit_machine_interactive(machine_name):
         return
 
     cur_type = machine.get("type", "local")
-    mtype = ask("Type (local/ssh)", default=cur_type)
-    if mtype is None:
-        return
-    mtype = mtype or cur_type
-    if mtype not in ("local", "ssh"):
-        mtype = cur_type
-    machine["type"] = mtype
+    default_ide = DEFAULT_IDE_COMMAND_REMOTE if cur_type == "ssh" else DEFAULT_IDE_COMMAND_LOCAL
 
-    if mtype == "ssh":
-        cur_host = machine.get("host", "")
-        host = ask("SSH host", default=cur_host)
-        if host is None:
-            return
-        machine["host"] = host or cur_host
-        cur_port = str(machine.get("port", ""))
-        port = ask("SSH port (leave empty for default 22)", default=cur_port)
-        if port is None:
-            return
-        if port.strip():
-            machine["port"] = int(port.strip())
-        elif "port" in machine and not port.strip():
-            pass  # keep existing port
-        cur_key = machine.get("ssh_key", "")
-        key = ask("SSH key path (leave empty to keep current)", default=cur_key)
-        if key is None:
-            return
-        if key:
-            machine["ssh_key"] = str(Path(key.strip()).expanduser())
-        cur_cp = machine.get("colette_path", "")
-        colette_path = ask("Path to colette binary on this machine (leave empty to keep)", default=cur_cp)
-        if colette_path is None:
-            return
-        if colette_path.strip():
-            machine["colette_path"] = colette_path.strip()
+    fields = [
+        FormField(name="type", label="Type", kind="choice", choices=["local", "ssh"], default=cur_type),
+        FormField(
+            name="host", label="SSH host", default=machine.get("host", ""),
+            visible_if=lambda v: v["type"] == "ssh",
+            validator=lambda s: (True, "") if s.strip() else (False, "SSH host cannot be empty"),
+        ),
+        FormField(
+            name="port", label="SSH port (empty = default 22)",
+            default=str(machine.get("port", "")),
+            visible_if=lambda v: v["type"] == "ssh",
+            validator=lambda s: (True, "") if (not s.strip() or s.strip().isdigit())
+                else (False, "Port must be a number"),
+        ),
+        FormField(
+            name="ssh_key", label="SSH key path (empty = none)",
+            default=machine.get("ssh_key", ""), visible_if=lambda v: v["type"] == "ssh",
+        ),
+        FormField(
+            name="colette_path", label="Path to colette binary (empty = skip auto-sync)",
+            default=machine.get("colette_path", ""), visible_if=lambda v: v["type"] == "ssh",
+        ),
+        FormField(
+            name="projects_dir", label="Projects directory",
+            default=machine.get("projects_dir", ""),
+            validator=lambda s: (True, "") if s.strip() else (False, "cannot be empty"),
+        ),
+        FormField(
+            name="agent_command", label="Agent command (empty = use default)",
+            default=machine.get("agent_command", ""),
+            placeholder=f"default: {DEFAULT_AGENT_COMMAND}",
+        ),
+        FormField(
+            name="ide_command", label="IDE command (empty = use default)",
+            default=machine.get("ide_command", ""),
+            placeholder=f"default: {default_ide}",
+        ),
+    ]
+
+    values = form(fields, title=f"Edit '{machine_name}'")
+    if values is None:
+        return
+
+    machine["type"] = values["type"]
+    if values["type"] == "ssh":
+        machine["host"] = values["host"].strip()
+        if values["port"].strip():
+            machine["port"] = int(values["port"].strip())
+        else:
+            machine.pop("port", None)
+        if values["ssh_key"].strip():
+            machine["ssh_key"] = str(Path(values["ssh_key"].strip()).expanduser())
+        else:
+            machine.pop("ssh_key", None)
+        if values["colette_path"].strip():
+            machine["colette_path"] = values["colette_path"].strip()
+        else:
+            machine.pop("colette_path", None)
     else:
         machine.pop("host", None)
         machine.pop("port", None)
         machine.pop("ssh_key", None)
         machine.pop("colette_path", None)
 
-    cur_pdir = machine.get("projects_dir", "")
-    pdir = ask("Projects directory", default=cur_pdir)
-    if pdir is None:
-        return
-    machine["projects_dir"] = pdir or cur_pdir
+    machine["projects_dir"] = values["projects_dir"].strip()
+
+    if values["agent_command"].strip():
+        machine["agent_command"] = values["agent_command"].strip()
+    else:
+        machine.pop("agent_command", None)
+
+    if values["ide_command"].strip():
+        machine["ide_command"] = values["ide_command"].strip()
+    else:
+        machine.pop("ide_command", None)
 
     save_config(cfg)
+
+
+def _rename_machine_interactive(machine_name):
+    """Rename a machine via a single text prompt."""
+    from .forms import ask
+    new_name = ask(f"New name for machine '{machine_name}'")
+    if not new_name or not new_name.strip():
+        return
+    from colette_cli.config import cmd_config_rename_machine
+    _popup(cmd_config_rename_machine)(Namespace(old_name=machine_name, new_name=new_name.strip()))
 
 
 def _remove_machine_interactive(machine_name):
@@ -365,55 +441,55 @@ def _remove_machine_interactive(machine_name):
     save_config(cfg)
 
 
-def _add_template_interactive(machine_name):
-    """Collect template details via TUI forms and add to machine config."""
-    from .forms import ask
+def _sync_all_interactive():
+    from colette_cli.config import cmd_config_sync
+    _async_popup(lambda: cmd_config_sync(Namespace(machine_name=None)), "Sync all machines")()
 
-    name = ask("Template name")
-    if not name:
-        return
-    name = name.strip()
+
+def _add_template_interactive(machine_name):
+    """Collect template details via a form and add to machine config."""
+    from .forms import form, FormField
+    from colette_cli.config import apply_add_template
 
     cfg = load_config()
     machine = cfg.get("machines", {}).get(machine_name)
     if not machine:
         return
-    if name in list_machine_template_names(machine):
+    existing_names = set(list_machine_template_names(machine))
+    existing_projects = {p["name"] for p in load_projects()}
+    existing_machines = set(cfg.get("machines", {}))
+
+    fields = [
+        FormField(
+            name="name", label="Template name",
+            validator=lambda s: (True, "") if (
+                s.strip() and s.strip() not in existing_names
+                and s.strip() not in existing_projects
+                and s.strip() not in existing_machines
+            ) else (False, "name required, must be unique on this machine, and not used as a project or machine name"),
+        ),
+        FormField(name="type", label="Type", kind="choice", choices=["directory", "git"], default="directory"),
+        FormField(
+            name="source",
+            label=lambda v: "Template path" if v.get("type") == "directory" else "Template git URL",
+            validator=lambda s: (True, "") if s.strip() else (False, "cannot be empty"),
+        ),
+        FormField(name="description", label="Description (optional)"),
+    ]
+    values = form(fields, title="Add template")
+    if values is None:
         return
-    if any(p["name"] == name for p in load_projects()):
-        return
 
-    ttype = ask("Template type (directory/git)", default="directory") or "directory"
-    if ttype not in ("directory", "git"):
-        ttype = "directory"
-    source_label = "Template path" if ttype == "directory" else "Template git URL"
-    source = ask(source_label)
-    if not source:
-        return
-    if not source.strip():
-        return
-
-    description = ask("Description (optional)") or None
-
-    entry: dict = {"name": name, "type": ttype}
-    if ttype == "directory":
-        entry["path"] = source
-    else:
-        entry["url"] = source
-    if description:
-        entry["description"] = description
-
-    machine_templates = normalize_machine_templates(machine)
-    machine_templates.append(entry)
-    machine["templates"] = machine_templates
-    save_config(cfg)
-
-    scaffold_template_hook_files(name, machine_name)
+    apply_add_template(
+        cfg, machine_name, values["name"].strip(), values["type"],
+        values["source"].strip(), values["description"].strip() or None,
+    )
 
 
 def _edit_template_interactive(machine_name, template_name):
-    """Edit template source and description via TUI forms."""
-    from .forms import ask
+    """Edit template source and description via a form."""
+    from .forms import form, FormField
+    from colette_cli.config import apply_edit_template
 
     cfg = load_config()
     machine = cfg.get("machines", {}).get(machine_name)
@@ -426,50 +502,27 @@ def _edit_template_interactive(machine_name, template_name):
         return
 
     current_type = template.get("type", "directory")
-    ttype = ask("Template type (directory/git)", default=current_type)
-    if ttype is None:
-        return
-    ttype = ttype or current_type
-    if ttype not in ("directory", "git"):
-        ttype = current_type
-
     current_source = template.get("path") or template.get("url", "")
-    source_label = "Template path" if ttype == "directory" else "Template git URL"
-    source = ask(source_label, default=current_source)
-    if source is None:
+    current_desc = template.get("description") or ""
+
+    fields = [
+        FormField(name="type", label="Type", kind="choice", choices=["directory", "git"], default=current_type),
+        FormField(
+            name="source",
+            label=lambda v: "Template path" if v.get("type") == "directory" else "Template git URL",
+            default=current_source,
+            validator=lambda s: (True, "") if s.strip() else (False, "cannot be empty"),
+        ),
+        FormField(name="description", label="Description (optional)", default=current_desc),
+    ]
+    values = form(fields, title=f"Edit '{template_name}'")
+    if values is None:
         return
-    source = source or current_source
-    if not source.strip():
-        return
 
-    cur_desc = template.get("description") or ""
-    description = ask("Description", default=cur_desc)
-    if description is None:
-        return
-    description = description or cur_desc or None
-
-    template.clear()
-    template.update({"name": template_name, "type": ttype})
-    if ttype == "directory":
-        template["path"] = source
-    else:
-        template["url"] = source
-    if description:
-        template["description"] = description
-    machine["templates"] = machine_templates
-    save_config(cfg)
-
-    scaffold_template_hook_files(template_name, machine_name)
-
-
-def _remove_template_interactive(machine_name, template_name):
-    """Confirm removal via TUI form and remove template from machine config."""
-    from .forms import confirm
-    from colette_cli.config import cmd_config_remove_template
-
-    if not confirm(f"Remove template '{template_name}' from '{machine_name}'?", default=False):
-        return
-    cmd_config_remove_template(Namespace(machine_name=machine_name, template_name=template_name))
+    apply_edit_template(
+        cfg, machine_name, template_name, values["type"],
+        values["source"].strip(), values["description"].strip() or None,
+    )
 
 
 def _unlink_interactive(name, project):
@@ -482,7 +535,7 @@ def _unlink_interactive(name, project):
     ):
         return
     from colette_cli.project.commands import cmd_unlink
-    cmd_unlink(Namespace(name=name), skip_confirmation=True)
+    _popup(lambda: cmd_unlink(Namespace(name=name), skip_confirmation=True))()
 
 
 # ---------------------------------------------------------------------------
@@ -503,8 +556,7 @@ def main_menu_items():
 
     return [
         MenuItem("Projects", children=project_list_items),
-        MenuItem("Templates", children=template_list_items),
-        MenuItem("Config", children=config_menu_items),
+        MenuItem("Machines", children=machine_list_items),
         MenuItem("Debug", children=debug_menu_items),
         MenuItem("Monitor", children=_monitor_items),
     ]
@@ -515,50 +567,67 @@ def main_menu_items():
 # ---------------------------------------------------------------------------
 
 def _create_project_interactive():
-    """Collect project details via TUI forms and create the project async."""
-    from .forms import ask
-    from colette_cli.template.registry import list_machine_template_names
+    """Collect project details via a form and create the project async."""
+    from .forms import form, FormField
+    from colette_cli.template.registry import list_creatable_template_names
+
     cfg = load_config()
     machines = list(cfg.get("machines", {}).keys())
     default_machine = cfg.get("default_machine") or (machines[0] if machines else "")
 
-    name = ask("Project name")
-    if not name:
+    def _template_choices(v):
+        machine_name = v.get("machine") or default_machine
+        machine_cfg = cfg.get("machines", {}).get(machine_name, {})
+        return ["(none)"] + list_creatable_template_names(machine_cfg, machine_name)
+
+    fields = [
+        FormField(
+            name="name", label="Project name",
+            validator=lambda s: (True, "") if (
+                s.strip() and s.strip() not in all_template_names(cfg)
+                and s.strip() not in cfg.get("machines", {})
+            ) else (False, "name required and must not collide with a template or machine name"),
+        ),
+        FormField(name="machine", label="Machine", kind="choice", choices=machines, default=default_machine),
+        FormField(name="template", label="Template", kind="choice", choices=_template_choices, default="(none)"),
+    ]
+    values = form(fields, title="Create project")
+    if values is None:
         return
 
-    if name in all_template_names(cfg):
-        return
-
-    machine = ask("Machine", default=default_machine, choices=machines or None) or default_machine
-
-    # Load templates available for the selected machine
-    machine_cfg = cfg.get("machines", {}).get(machine, {})
-    template_names = list_machine_template_names(machine_cfg)
-    template_choices = ["(none)"] + template_names
-    raw_template = ask("Template", choices=template_choices)
-    template = raw_template if raw_template and raw_template != "(none)" else None
+    name = values["name"].strip()
+    template = values["template"] if values["template"] != "(none)" else None
 
     from colette_cli.project import cmd_create
-    args = Namespace(name=name, machine=machine, template=template)
+    args = Namespace(name=name, machine=values["machine"], template=template)
     _async_popup(cmd_create, f"Create {name}")(args)
 
 
 def _link_directory_interactive():
-    """Collect link details via TUI forms and call cmd_link."""
+    """Collect link details via a form and call cmd_link."""
     from colette_cli.project import cmd_link
-    from .forms import ask
+    from .forms import form, FormField
     cfg = load_config()
     machines = list(cfg.get("machines", {}).keys())
     default_machine = cfg.get("default_machine", "")
 
-    path = ask("Directory path")
-    if not path:
+    fields = [
+        FormField(
+            name="path", label="Directory path",
+            validator=lambda s: (True, "") if s.strip() else (False, "cannot be empty"),
+        ),
+        FormField(name="machine", label="Machine", kind="choice", choices=machines, default=default_machine),
+        FormField(name="name", label="Project name (empty = directory name)"),
+    ]
+    values = form(fields, title="Link project")
+    if values is None:
         return
 
-    machine = ask("Machine", default=default_machine, choices=machines or None) or default_machine
-    name = ask("Project name (leave empty for directory name)") or None
-
-    cmd_link(Namespace(path=path, machine=machine, name=name))
+    _popup(cmd_link)(Namespace(
+        path=values["path"].strip(),
+        machine=values["machine"],
+        name=values["name"].strip() or None,
+    ))
 
 
 def project_list_items():
@@ -732,64 +801,127 @@ def project_hook_items(project):
 
 
 # ---------------------------------------------------------------------------
-# Template screens
+# Machine screens (also home to their templates and a project cross-reference)
 # ---------------------------------------------------------------------------
 
-def template_list_items():
+def machine_list_items():
     cfg = load_config()
-    default = cfg.get("default_machine")
-    items = []
+    machines = cfg.get("machines", {})
+    default = cfg.get("default_machine", "")
 
-    by_machine = {}
-    for machine_name, machine in cfg.get("machines", {}).items():
-        tmpl_names = list_machine_template_names(machine)
-        if tmpl_names:
-            by_machine[machine_name] = (machine_name, machine)
+    items = [MenuItem("Add machine", action=_add_machine_interactive)]
 
-    if not by_machine:
-        return [MenuItem("(no templates)", action=lambda: None)]
+    if any(is_remote_machine(m) for m in machines.values()):
+        items.append(MenuItem("Sync all", action=_sync_all_interactive))
 
-    def _machine_label(name):
-        return f"── {name}" + (" (default)" if name == default else "") + " ──"
+    for machine_name in sorted(machines, key=lambda m: (m != default, m)):
+        detail = "default" if machine_name == default else machines[machine_name].get("type", "local")
+        items.append(MenuItem(
+            machine_name,
+            detail=detail,
+            children=lambda mn=machine_name: machine_action_items(mn),
+        ))
 
-    for machine_name in sorted(by_machine, key=lambda m: (m != default, m)):
-        _, machine = by_machine[machine_name]
-        items.append(MenuItem(_machine_label(machine_name), selectable=False))
-        for tmpl in sorted(normalize_machine_templates(machine), key=lambda t: t["name"]):
-            tmpl_name = tmpl["name"]
-            source = tmpl.get("path") or tmpl.get("url") or ""
-            items.append(MenuItem(
-                tmpl_name,
-                detail=source,
-                children=lambda t=tmpl_name, mn=machine_name: template_action_items(t, mn),
-            ))
+    if not machines:
+        items.append(MenuItem("(no machines configured)", action=lambda: None))
 
     return items
 
 
-def template_action_items(template_name, machine_name):
+def machine_action_items(machine_name):
+    from colette_cli.config import cmd_config_set_default, cmd_config_sync
+    from colette_cli.project import cmd_attach
+    from colette_cli.utils.config import load_machine_cache
+    _cfg = load_config()
+    _machine = _cfg.get("machines", {}).get(machine_name) or {}
+    _is_remote = is_remote_machine(_machine)
+
+    def _set_default():
+        _popup(cmd_config_set_default)(Namespace(machine_name=machine_name))
+
+    def _sync():
+        _async_popup(lambda: cmd_config_sync(Namespace(machine_name=machine_name)), f"Sync {machine_name}")()
+
+    items = []
+    if _is_remote:
+        cache = load_machine_cache(machine_name)
+        ts = cache.get("synced_at") if cache else None
+        items.append(MenuItem(f"Last synced: {ts or 'never'}", selectable=False))
+
+    items.append(MenuItem("Terminal", action=_suspend(
+        lambda: cmd_attach(Namespace(name=machine_name))
+    )))
+
+    items += [
+        MenuItem("Edit", action=lambda: _edit_machine_interactive(machine_name)),
+        MenuItem("Set as default", action=_set_default),
+        MenuItem("Rename", action=lambda: _rename_machine_interactive(machine_name)),
+    ]
+    if _is_remote:
+        items.append(MenuItem("Sync", action=_sync))
+    items += [
+        MenuItem("Templates", children=lambda: machine_template_items(machine_name)),
+        MenuItem("Projects", children=lambda: machine_project_items(machine_name)),
+        MenuItem("Remove", action=lambda: _remove_machine_interactive(machine_name)),
+    ]
+    return items
+
+
+def machine_project_items(machine_name):
+    """This machine's own projects, drilling into the full project action
+    set (project_action_items) — not just hooks. Useful e.g. to check/unlink
+    a machine's projects before removing it, without leaving this screen."""
+    projects = [p for p in load_projects() if p["machine"] == machine_name]
+    if not projects:
+        return [MenuItem("(no projects)", action=lambda: None)]
+    items = []
+    for project in sorted(projects, key=lambda p: p["name"]):
+        items.append(MenuItem(
+            project["name"],
+            detail=project.get("template") or "—",
+            children=lambda p=project: project_action_items(p),
+        ))
+    return items
+
+
+def machine_template_items(machine_name):
+    cfg = load_config()
+    machine = cfg.get("machines", {}).get(machine_name, {})
+    template_names = list_machine_template_names(machine)
+
+    items = [MenuItem("Add template", action=_popup(lambda: _add_template_interactive(machine_name)))]
+
+    for tmpl_name in template_names:
+        items.append(MenuItem(
+            tmpl_name,
+            children=lambda tn=tmpl_name: machine_template_action_items(machine_name, tn),
+        ))
+
+    if not template_names:
+        items.append(MenuItem("(no templates)", action=lambda: None))
+
+    return items
+
+
+def machine_template_action_items(machine_name, template_name):
+    """Full, unified action set for a machine-scoped template."""
     def _create_project():
         from .forms import ask
         name = ask(f"New project name for '{template_name}'")
         if not name:
             return
-        args = Namespace(
-            name=name,
-            machine=machine_name,
-            template=template_name,
-        )
+        args = Namespace(name=name, machine=machine_name, template=template_name)
         from colette_cli.project import cmd_create
         _async_popup(cmd_create, f"Create {name}")(args)
 
     def _run_update():
         from colette_cli.template import run_onupdate_for_template, get_template_metadata
-        from colette_cli.template.registry import get_machine_template
-        from colette_cli.utils.helpers import is_remote_machine
+        from colette_cli.template.registry import get_creatable_template
         cfg = load_config()
         machine = cfg.get("machines", {}).get(machine_name) or {}
         is_remote = is_remote_machine(machine)
         template_metadata = get_template_metadata(machine, machine_name, template_name)
-        template_entry = get_machine_template(machine, template_name)
+        template_entry = get_creatable_template(machine, machine_name, template_name)
         template_path = (template_entry or {}).get("path")
         run_onupdate_for_template(
             template_name,
@@ -801,50 +933,34 @@ def template_action_items(template_name, machine_name):
             fail_on_error=False,
         )
 
-    def _rename_template():
+    def _rename():
         from .forms import ask
+        from colette_cli.config import cmd_config_rename_template
         new_name = ask(f"New name for template '{template_name}'")
         if not new_name or not new_name.strip():
             return
-        from colette_cli.config import cmd_config_rename_template
-        cmd_config_rename_template(Namespace(
+        _popup(cmd_config_rename_template)(Namespace(
             machine_name=machine_name,
             old_name=template_name,
             new_name=new_name.strip(),
         ))
 
-    def _change_path():
-        from .forms import ask
-        cfg = load_config()
-        machine = cfg.get("machines", {}).get(machine_name) or {}
-        machine_templates = normalize_machine_templates(machine)
-        template = next((t for t in machine_templates if t["name"] == template_name), None)
-        if not template:
+    def _remove():
+        from .forms import confirm
+        from colette_cli.config import cmd_config_remove_template
+        if not confirm(f"Remove template '{template_name}' from '{machine_name}'?", default=False):
             return
-        ttype = template.get("type", "directory")
-        current = template.get("path") if ttype == "directory" else template.get("url", "")
-        label = "Template path" if ttype == "directory" else "Template git URL"
-        new_val = ask(label, default=current or "")
-        if not new_val or not new_val.strip():
-            return
-        if ttype == "directory":
-            template["path"] = new_val.strip()
-            template.pop("url", None)
-        else:
-            template["url"] = new_val.strip()
-            template.pop("path", None)
-        machine["templates"] = machine_templates
-        save_config(cfg)
+        _popup(cmd_config_remove_template)(Namespace(machine_name=machine_name, template_name=template_name))
 
     return [
         MenuItem("Create project", action=_create_project),
         MenuItem("Run update", action=_async_popup(_run_update, f"Update template {template_name}")),
         MenuItem("Edit hooks", children=lambda: template_hook_items(template_name, machine_name)),
         MenuItem("Edit parameters", children=lambda: template_param_items(template_name, machine_name)),
-        MenuItem("Rename", action=_rename_template),
-        MenuItem("Change path", action=_change_path),
+        MenuItem("Edit", action=_popup(lambda: _edit_template_interactive(machine_name, template_name))),
+        MenuItem("Rename", action=_rename),
+        MenuItem("Remove", action=_remove),
     ]
-
 
 
 def template_hook_items(template_name, machine_name):
@@ -862,22 +978,15 @@ def template_hook_items(template_name, machine_name):
 
 def template_param_items(template_name, machine_name):
     """Screen for viewing and editing a template's custom parameters."""
+    from colette_cli.config import cmd_config_set_template_params
+
     def _reload_metadata():
         from colette_cli.utils.config import get_machine_template_params
         return get_machine_template_params(load_config().get("machines", {}).get(machine_name, {}), template_name)
 
     def _save_params(params):
         cfg = load_config()
-        machines = cfg.setdefault("machines", {})
-        machine = machines.setdefault(machine_name, {})
-        templates_list = machine.setdefault("templates", [])
-        for entry in templates_list:
-            if entry.get("name") == template_name:
-                entry["params"] = params
-                break
-        else:
-            templates_list.append({"name": template_name, "params": params})
-        save_config(cfg)
+        cmd_config_set_template_params(cfg, machine_name, template_name, params)
 
     def _add_param():
         from .forms import ask
@@ -925,193 +1034,6 @@ def template_param_items(template_name, machine_name):
     if not params:
         items.append(MenuItem("(no parameters)", action=lambda: None))
 
-    return items
-
-
-# ---------------------------------------------------------------------------
-# Config screens
-# ---------------------------------------------------------------------------
-
-def config_menu_items():
-    return [
-        MenuItem("Machines", children=machine_list_items),
-        MenuItem("Projects", children=config_project_list_items),
-    ]
-
-
-def machine_list_items():
-    cfg = load_config()
-    machines = cfg.get("machines", {})
-    default = cfg.get("default_machine", "")
-
-    items = [MenuItem("Add machine", action=_add_machine_interactive)]
-
-    for machine_name in sorted(machines, key=lambda m: (m != default, m)):
-        detail = "default" if machine_name == default else machines[machine_name].get("type", "local")
-        items.append(MenuItem(
-            machine_name,
-            detail=detail,
-            children=lambda mn=machine_name: machine_action_items(mn),
-        ))
-
-    if not machines:
-        items.append(MenuItem("(no machines configured)", action=lambda: None))
-
-    return items
-
-
-def machine_action_items(machine_name):
-    from colette_cli.config import cmd_config_set_default
-    _cfg = load_config()
-    _machine = _cfg.get("machines", {}).get(machine_name) or {}
-    _is_remote = is_remote_machine(_machine)
-
-    def _set_default():
-        cmd_config_set_default(Namespace(machine_name=machine_name))
-
-    def _set_colette_path():
-        from .forms import ask
-        cfg = load_config()
-        machine = cfg.get("machines", {}).get(machine_name) or {}
-        if not is_remote_machine(machine):
-            return
-        current = machine.get("colette_path", "")
-        new_val = ask("Path to colette binary on this machine (empty to clear)", default=current)
-        if new_val is None:
-            return
-        new_val = new_val.strip()
-        if new_val:
-            machine["colette_path"] = new_val
-        else:
-            machine.pop("colette_path", None)
-        cfg["machines"][machine_name] = machine
-        save_config(cfg)
-
-    def _set_agent_command():
-        from .forms import ask
-        cfg = load_config()
-        machine = cfg.get("machines", {}).get(machine_name) or {}
-        current = machine.get("agent_command", "")
-        new_val = ask(
-            f"Agent command (empty to reset to default: {DEFAULT_AGENT_COMMAND})",
-            default=current,
-        )
-        if new_val is None:
-            return
-        new_val = new_val.strip()
-        if new_val:
-            machine["agent_command"] = new_val
-        else:
-            machine.pop("agent_command", None)
-        cfg["machines"][machine_name] = machine
-        save_config(cfg)
-
-    def _set_ide_command():
-        from .forms import ask
-        cfg = load_config()
-        machine = cfg.get("machines", {}).get(machine_name) or {}
-        default_ide = DEFAULT_IDE_COMMAND_REMOTE if is_remote_machine(machine) else DEFAULT_IDE_COMMAND_LOCAL
-        current = machine.get("ide_command", "")
-        new_val = ask(
-            f"IDE command (empty to reset to default: {default_ide}; supports {{host}}/{{path}})",
-            default=current,
-        )
-        if new_val is None:
-            return
-        new_val = new_val.strip()
-        if new_val:
-            machine["ide_command"] = new_val
-        else:
-            machine.pop("ide_command", None)
-        cfg["machines"][machine_name] = machine
-        save_config(cfg)
-
-    def _sync_colette():
-        from colette_cli.utils.ssh import sync_remote_colette
-        cfg = load_config()
-        machine = cfg.get("machines", {}).get(machine_name) or {}
-        if not is_remote_machine(machine):
-            return
-        if not machine.get("colette_path"):
-            print(f"No colette_path set for '{machine_name}'. Use 'Set colette path' first.")
-            return
-
-        def _do_sync():
-            result = sync_remote_colette(machine, machine_name)
-            if result is None:
-                raise RuntimeError(f"sync failed for '{machine_name}'")
-            from datetime import datetime, timezone
-
-            from colette_cli.utils.config import save_machine_cache
-            from colette_cli.utils.ssh import fetch_self_report
-
-            report = fetch_self_report(machine, machine_name)
-            if report is None:
-                raise RuntimeError(f"failed to fetch project/template data from '{machine_name}'")
-            cache_data = {
-                "machine": machine_name,
-                "synced_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "projects_dir": report.get("machine", {}).get("projects_dir", ""),
-                "templates": report.get("machine", {}).get("templates", []),
-                "projects": report.get("projects", []),
-            }
-            save_machine_cache(machine_name, cache_data)
-
-        _async_popup(_do_sync, f"Sync colette → {machine_name}")()
-
-    items = [
-        MenuItem("Edit", action=lambda: _edit_machine_interactive(machine_name)),
-        MenuItem("Set as default", action=_set_default),
-        MenuItem("Set agent command", action=_set_agent_command),
-        MenuItem("Set IDE command", action=_set_ide_command),
-    ]
-    if _is_remote:
-        items += [
-            MenuItem("Set colette path", action=_set_colette_path),
-            MenuItem("Sync colette", action=_sync_colette),
-        ]
-    items += [
-        MenuItem("Templates", children=lambda: machine_template_items(machine_name)),
-        MenuItem("Remove", action=lambda: _remove_machine_interactive(machine_name)),
-    ]
-    return items
-
-
-def machine_template_items(machine_name):
-    cfg = load_config()
-    machine = cfg.get("machines", {}).get(machine_name, {})
-    template_names = list_machine_template_names(machine)
-
-    items = [MenuItem("Add template", action=lambda: _add_template_interactive(machine_name))]
-
-    for tmpl_name in template_names:
-        items.append(MenuItem(
-            tmpl_name,
-            children=lambda tn=tmpl_name: [
-                MenuItem("Edit", action=lambda: _edit_template_interactive(machine_name, tn)),
-                MenuItem("Edit hooks", children=lambda: template_hook_items(tn, machine_name)),
-                MenuItem("Remove", action=lambda: _remove_template_interactive(machine_name, tn)),
-            ],
-        ))
-
-    if not template_names:
-        items.append(MenuItem("(no templates)", action=lambda: None))
-
-    return items
-
-
-def config_project_list_items():
-    projects = load_projects()
-    if not projects:
-        return [MenuItem("(no projects)", action=lambda: None)]
-
-    items = []
-    for project in sorted(projects, key=lambda p: p["name"]):
-        items.append(MenuItem(
-            project["name"],
-            detail=project.get("template") or "—",
-            children=lambda p=project: project_hook_items(p),
-        ))
     return items
 
 

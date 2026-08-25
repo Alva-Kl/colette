@@ -7,8 +7,6 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".config" / "colette"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 PROJECTS_FILE = CONFIG_DIR / "projects.json"
-TEMPLATES_FILE = CONFIG_DIR / "templates.json"
-TEMPLATE_SCRIPTS_DIR = CONFIG_DIR / "templates"
 PROJECT_HOOKS_DIR = CONFIG_DIR / "projects"
 MACHINE_SCRIPTS_DIR = CONFIG_DIR / "machines"
 HOOK_FAILURES_FILE = CONFIG_DIR / "hook-failures.json"
@@ -50,7 +48,6 @@ _HOOK_VAR_DOCS = """\
 def ensure_config_dir():
     """Create config directory if it doesn't exist."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    TEMPLATE_SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
     PROJECT_HOOKS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -135,19 +132,6 @@ def load_projects():
     return projects
 
 
-def load_templates():
-    """Load template registry."""
-    if not TEMPLATES_FILE.exists():
-        return {"templates": []}
-    return json.loads(TEMPLATES_FILE.read_text())
-
-
-def save_templates(templates):
-    """Save template registry."""
-    ensure_config_dir()
-    TEMPLATES_FILE.write_text(json.dumps(templates, indent=2) + "\n")
-
-
 def get_project(name):
     """Get a project by name from the merged local+cache view, or None.
 
@@ -206,59 +190,6 @@ def require_machine(cfg, machine_name):
     if not machine:
         err(f"machine '{machine_name}' not found.")
     return machine
-
-
-def get_template_dir(template_name):
-    """Return the local configuration directory for a template's hook files."""
-    return TEMPLATE_SCRIPTS_DIR / template_name
-
-
-def ensure_template_dir(template_name):
-    """Ensure a template hook directory exists and return it."""
-    ensure_config_dir()
-    template_dir = get_template_dir(template_name)
-    template_dir.mkdir(parents=True, exist_ok=True)
-    return template_dir
-
-
-def get_template_hook_path(template_name, hook_name):
-    """Return the path of a template hook file."""
-    filename = TEMPLATE_HOOK_FILENAMES[hook_name]
-    return get_template_dir(template_name) / filename
-
-
-def template_hook_exists(template_name, hook_name):
-    """Return whether a template hook file exists."""
-    return get_template_hook_path(template_name, hook_name).exists()
-
-
-def read_template_hook(template_name, hook_name):
-    """Read a template hook file if present."""
-    hook_path = get_template_hook_path(template_name, hook_name)
-    if not hook_path.exists():
-        return None
-    return hook_path.read_text()
-
-
-def write_template_hook(template_name, hook_name, content):
-    """Write a template hook file and make it executable when appropriate."""
-    template_dir = ensure_template_dir(template_name)
-    hook_path = template_dir / TEMPLATE_HOOK_FILENAMES[hook_name]
-    hook_path.write_text(content)
-    mode = 0o755 if hook_name != "coletterc" else 0o644
-    os.chmod(hook_path, mode)
-    return hook_path
-
-
-def remove_template_dir(template_name):
-    """Remove a template hook directory if it exists."""
-    template_dir = get_template_dir(template_name)
-    if not template_dir.exists():
-        return
-    for child in template_dir.iterdir():
-        if child.is_file() or child.is_symlink():
-            child.unlink()
-    template_dir.rmdir()
 
 
 def get_project_hook_dir(project_name):
@@ -402,34 +333,6 @@ def get_machine_template_params(machine, template_name):
         if tmpl.get("name") == template_name:
             return dict(tmpl.get("params") or {})
     return {}
-
-
-def upsert_machine_template_entry(cfg, machine_name, template_name, description=None, params=None):
-    """Write description/params into a machine's template entry in config.json."""
-    machine = cfg.get("machines", {}).get(machine_name)
-    if not machine:
-        return cfg
-    templates = machine.setdefault("templates", [])
-    for t in templates:
-        if t.get("name") == template_name:
-            if description is not None:
-                if description:
-                    t["description"] = description
-                else:
-                    t.pop("description", None)
-            if params is not None:
-                if params:
-                    t["params"] = params
-                else:
-                    t.pop("params", None)
-            return cfg
-    entry = {"name": template_name}
-    if description:
-        entry["description"] = description
-    if params:
-        entry["params"] = params
-    templates.append(entry)
-    return cfg
 
 
 def rename_machine_template_dir(machine_name, old_name, new_name):

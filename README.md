@@ -42,8 +42,7 @@ about, not those machines' own data.
 |---|---|
 | `config.json` | This machine's own definition, plus connection info for known remote machines |
 | `projects.json` | This machine's own registered projects (never a remote's) |
-| `templates.json` | Legacy template metadata fallback (description, params) |
-| `templates/<name>/` | Hook scripts for a template owned by this machine |
+| `machines/<machine>/templates/<name>/` | Hook scripts for a template on a given machine |
 | `projects/<name>/` | Project-specific hook overrides owned by this machine |
 | `cache/<machine>.json` | **Read-only** — a cached snapshot of a known remote machine's own projects/templates, populated by `colette config sync`. Never authoritative; regenerated wholesale on every sync. |
 
@@ -71,10 +70,12 @@ A **template** is a directory or git repository used as the starting point when
 creating a new project. Templates have associated hook scripts that run at
 lifecycle events.
 
-Template names and project names share a **global namespace** — a name cannot be
-used for both a template and a project at the same time. This allows project
-commands (`colette ide`, `colette attach`, etc.) to accept a template name and
-work on the template's source directory directly.
+Template, project, and machine names all share a single **global
+namespace** — a name cannot be reused across any of the three. This lets
+project commands (`colette ide`, `colette attach`, etc.) accept a template
+name and work on the template's source directory directly, and lets
+`colette attach` unambiguously resolve a name to either a project or a
+machine.
 
 ### Projects
 
@@ -115,6 +116,7 @@ Without an action, prints a summary of the current configuration.
 | `remove-machine <machine>` | Remove a machine |
 | `set-default <machine>` | Set the default machine |
 | `rename-template <machine> <old> <new>` | Rename a template on a machine |
+| `rename-machine <old> <new>` | Rename a machine |
 | `sync [machine]` | Sync the colette binary and pull a read-only project/template cache from remote machine(s) |
 
 #### `colette config list`
@@ -234,6 +236,16 @@ that referenced the old template name.
 
 ```bash
 colette config rename-template local old-name new-name
+```
+
+#### `colette config rename-machine <old> <new>`
+
+Rename a machine. Updates its template-hooks directory, its remote-cache
+file (if any), the default machine pointer if it pointed at the renamed
+machine, and every local project's `machine` field that referenced it.
+
+```bash
+colette config rename-machine old-name new-name
 ```
 
 #### `colette config sync [machine]`
@@ -428,11 +440,25 @@ colette stop -m local my-project
 colette attach <name>
 ```
 
-Attach to (or create) the tmux session for a project, loading the `coletterc`
-environment. If already inside tmux, switches to the session.
+Attach to (or create) a tmux session for `<name>` — resolved as a project
+first, then as a machine (project/template/machine names share one global
+namespace, enforced at creation time, so a name is never ambiguous).
+
+For a **project**, this loads the `coletterc` environment in a session named
+after the project. For a **machine**, it opens a plain shell with no
+project/template context — just a basic shell in that machine's
+`projects_dir` (or its home directory if unset), in a session named
+`<machine>-shell`; for an SSH machine this behaves like a basic `ssh` session
+inside its own tmux pane, for a local machine it opens a local shell there.
+Useful for ad-hoc, machine-wide work — including driving an agent manually —
+without needing an existing project.
+
+If already inside tmux, switches to the session; re-running `attach` on the
+same name re-attaches instead of creating a duplicate.
 
 ```bash
-colette attach my-project
+colette attach my-project   # a project
+colette attach my-server    # a machine
 ```
 
 ---
@@ -457,18 +483,35 @@ the TUI via overlay forms — the terminal is never suspended for user input.
 
 **Screens:**
 - **Projects** — lists all projects grouped by machine. Selecting a project
-  offers: *Open session*, *Code*, *Logs*, *Start*, *Stop*, *Edit hooks*,
-  *Unlink*, *Delete*.
-- **Templates** — lists all configured templates. Selecting a template offers:
-  *Create project* (runs async — a desktop notification fires when done),
-  *Edit hooks*, *Edit parameters*.
-- **Config** — manage machines and their templates/parameters.
+  offers: *Open session*, *IDE*, *Agent*, *Logs*, *Monitor*, *Start*, *Stop*,
+  *Update*, *Edit hooks*, *Unlink*, *Delete*.
+- **Machines** — the single home for everything machine-scoped. Selecting a
+  machine offers: *Terminal* (attach to or create a dedicated tmux shell
+  session on that machine — a basic SSH-like pane for remote machines, a
+  local shell for local ones), *Edit* (a multi-field form covering type, SSH
+  connection details, projects directory, agent/IDE command overrides),
+  *Set as default*, *Rename*, *Sync* (SSH machines only — pulls the remote's
+  projects/templates into the local cache), *Templates* (add/edit/rename/
+  remove a machine's templates, and per-template *Create project*, *Run
+  update*, *Edit hooks*, *Edit parameters*), *Projects* (this machine's
+  projects, with the full project action set), and *Remove*. A "Last
+  synced" status line is shown for SSH machines. *Sync all* syncs every
+  configured SSH machine in one action.
+- **Debug** — hook failure log.
 - **Monitor** — open a split-pane tmux window for all active project sessions.
 
-**Async operations:** *Create project* and *Delete project* run in the
-background. The footer shows `⏳ N job(s) running…` while they are in
-progress; a desktop notification (`notify-send` on Linux, `osascript` on
-macOS) fires when each job completes.
+Multi-field flows (add/edit a machine, add/edit a template, create/link a
+project) use a single form screen: all fields are visible with their current
+values, arrow keys/Tab move between them, and fields can show or hide live
+based on other fields (e.g. SSH-only fields appear only once *Type* is set to
+`ssh`). Submit validates every visible field and reports the first error
+inline; Cancel (or Escape) discards the whole form.
+
+**Async operations:** *Create project*, *Delete project*, *Sync*, and *Run
+update* run in the background. The footer shows `⏳ N job(s) running…` while
+they are in progress; a toast appears over the menu when a job completes, a
+desktop notification (`notify-send` on Linux, `osascript` on macOS) fires,
+and the result is also logged to the notifications screen (`n` key).
 
 ```bash
 colette tui

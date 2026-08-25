@@ -70,6 +70,62 @@ class TestCmdDebugHookLog:
         assert "something went wrong" in capsys.readouterr().out
 
 
+class TestCmdDebugSelfReport:
+    def test_uses_default_machine_when_it_is_local(self, tmp_config, capsys):
+        import json
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.debug.commands import cmd_debug_self_report
+        save_config({
+            "machines": {
+                "local": {"type": "local", "projects_dir": "/home/user/projects", "templates": []},
+                "other": {"type": "local", "projects_dir": "/elsewhere", "templates": []},
+            },
+            "default_machine": "local",
+        })
+        save_local_projects([{"name": "p", "machine": "local", "path": "/home/user/projects/p", "template": None}])
+        cmd_debug_self_report(MagicMock())
+        report = json.loads(capsys.readouterr().out)
+        assert report["machine"]["projects_dir"] == "/home/user/projects"
+        assert report["projects"][0]["name"] == "p"
+
+    def test_falls_back_to_first_local_entry_when_default_is_ssh(self, tmp_config, capsys):
+        import json
+        from colette_cli.utils.config import save_config
+        from colette_cli.debug.commands import cmd_debug_self_report
+        save_config({
+            "machines": {
+                "remote-stub": {"type": "ssh", "host": "user@elsewhere"},
+                "local": {"type": "local", "projects_dir": "/home/user/projects", "templates": []},
+            },
+            "default_machine": "remote-stub",
+        })
+        cmd_debug_self_report(MagicMock())
+        report = json.loads(capsys.readouterr().out)
+        assert report["machine"]["projects_dir"] == "/home/user/projects"
+
+    def test_falls_back_to_first_local_entry_when_no_default_set(self, tmp_config, capsys):
+        import json
+        from colette_cli.utils.config import save_config
+        from colette_cli.debug.commands import cmd_debug_self_report
+        save_config({
+            "machines": {"local": {"type": "local", "projects_dir": "/p", "templates": []}},
+            "default_machine": None,
+        })
+        cmd_debug_self_report(MagicMock())
+        report = json.loads(capsys.readouterr().out)
+        assert report["machine"]["projects_dir"] == "/p"
+
+    def test_errors_when_no_local_machine_entry_exists(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.debug.commands import cmd_debug_self_report
+        save_config({
+            "machines": {"remote": {"type": "ssh", "host": "user@host"}},
+            "default_machine": "remote",
+        })
+        with pytest.raises(SystemExit):
+            cmd_debug_self_report(MagicMock())
+
+
 class TestCmdDebugDispatch:
     def test_hook_log_subcommand_dispatches(self, tmp_config, capsys):
         from colette_cli.debug.commands import cmd_debug
@@ -79,6 +135,20 @@ class TestCmdDebugDispatch:
         args.project = None
         cmd_debug(args)
         assert "No hook failures" in capsys.readouterr().out
+
+    def test_self_report_subcommand_dispatches(self, tmp_config, capsys):
+        import json
+        from colette_cli.utils.config import save_config
+        from colette_cli.debug.commands import cmd_debug
+        save_config({
+            "machines": {"local": {"type": "local", "projects_dir": "/p", "templates": []}},
+            "default_machine": "local",
+        })
+        args = MagicMock()
+        args.debug_cmd = "self-report"
+        cmd_debug(args)
+        report = json.loads(capsys.readouterr().out)
+        assert report["machine"]["projects_dir"] == "/p"
 
     def test_no_subcommand_prints_help(self, tmp_config):
         from colette_cli.debug.commands import cmd_debug

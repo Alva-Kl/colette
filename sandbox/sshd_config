@@ -1,0 +1,18 @@
+Port 22
+ListenAddress 0.0.0.0
+
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+
+# Passwordless-key-only, matching colette_cli/utils/ssh.py's assumption that
+# sync/self-report/hook-push calls (BatchMode=yes) never see a password prompt.
+PermitRootLogin prohibit-password
+PasswordAuthentication no
+PubkeyAuthentication yes
+ChallengeResponseAuthentication no
+
+# Avoids known sshd+PAM session-setup issues in minimal containers (no
+# /var/run/utmp, restricted /proc, etc.) that can otherwise break every login.
+UsePAM no
+
+Subsystem sftp /usr/lib/openssh/sftp-server

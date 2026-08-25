@@ -109,15 +109,20 @@ def delete_project_record(machine, machine_name, name):
 
 
 def all_template_names(cfg=None):
-    """Return a set of all template names across all machines."""
+    """Return a set of all template names across all machines.
+
+    For remote (ssh) machines this includes templates only known through
+    the read-only sync cache — not just ones explicitly configured on this
+    controller — so the project/template global namespace check stays
+    correct even for a remote's own, never-locally-configured templates.
+    """
+    from colette_cli.template.registry import list_creatable_template_names
     from colette_cli.utils.config import load_config
     if cfg is None:
         cfg = load_config()
     names = set()
-    for machine in cfg.get("machines", {}).values():
-        for tmpl in machine.get("templates", []):
-            if tmpl.get("name"):
-                names.add(tmpl["name"])
+    for machine_name, machine in cfg.get("machines", {}).items():
+        names.update(list_creatable_template_names(machine, machine_name))
     return names
 
 

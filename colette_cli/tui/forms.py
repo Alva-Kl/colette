@@ -5,6 +5,8 @@ suspended for user input.
 """
 
 import curses
+from dataclasses import dataclass
+from typing import Callable, Union
 
 from . import state
 
@@ -281,6 +283,273 @@ def _ask_choices(prompt: str, choices: "list[str]", default: str = "") -> "str |
             elif key == curses.KEY_PPAGE:
                 sel = max(0, sel - visible)
     finally:
+        del win
+        _restore()
+
+
+@dataclass
+class FormField:
+    """One field in a multi-field form() screen.
+
+    label/choices may be a plain value or a callable taking the form's
+    in-progress working dict (``{field_name: current_str_value}``) — this is
+    how a field's label or choice list can depend on another field's current
+    value (e.g. "Template path" vs "Template git URL" depending on `type`).
+
+    visible_if is re-evaluated every render; a hidden field's value is still
+    carried in the working dict (and returned to the caller), just not shown
+    or editable while hidden.
+
+    validator runs only at submit time, in field order, on currently-visible
+    fields — returns (True, "") on success or (False, "error message") to
+    keep the form open with that field focused and the message displayed.
+    """
+    name: str
+    label: "Union[str, Callable[[dict], str]]" = ""
+    kind: str = "text"  # "text" | "choice"
+    default: str = ""
+    choices: "Union[list, Callable[[dict], list], None]" = None
+    visible_if: "Callable[[dict], bool] | None" = None
+    validator: "Callable[[str], tuple] | None" = None
+    placeholder: str = ""
+
+
+def _resolve(value, working):
+    return value(working) if callable(value) else value
+
+
+def _form_plain_input(fields: "list[FormField]", working: dict) -> dict:
+    """No-curses fallback: prompt sequentially via input(), one pass, no cancel."""
+    for f in fields:
+        if f.visible_if is not None and not f.visible_if(working):
+            continue
+        label = _resolve(f.label, working)
+        if f.kind == "choice":
+            choices = _resolve(f.choices, working) or []
+            if choices and working.get(f.name) not in choices:
+                working[f.name] = choices[0]
+            if not choices:
+                continue
+            for i, c in enumerate(choices):
+                print(f"  {i + 1}. {c}")
+            raw = input(f"{label} [1-{len(choices)}] (default {working[f.name]}): ").strip()
+            if raw:
+                try:
+                    idx = int(raw) - 1
+                    if 0 <= idx < len(choices):
+                        working[f.name] = choices[idx]
+                except ValueError:
+                    pass
+        else:
+            while True:
+                raw = input(f"{label} [{working.get(f.name, '')}]: ").strip()
+                value = raw or working.get(f.name, "")
+                if f.validator is not None:
+                    ok, msg = f.validator(value)
+                    if not ok:
+                        print(f"Error: {msg}")
+                        continue
+                working[f.name] = value
+                break
+    return working
+
+
+def form(fields: "list[FormField]", title: str = "") -> "dict | None":
+    """Show a multi-field form overlay: all fields visible at once, with
+    live conditional visibility and a single Submit/Cancel at the end.
+
+    Returns the full working dict (keyed by every field's name, including
+    fields that ended up hidden at submit time — the caller decides what to
+    keep), or None if the user cancelled (ESC, or selecting Cancel).
+
+    Navigation: Up/Down and Tab/Shift-Tab move focus between visible fields
+    and the trailing Submit/Cancel rows (wrapping). Left/Right on a text
+    field move the in-row edit cursor; on a choice field they cycle its
+    value. Enter on a field advances focus (it never submits by itself) —
+    only activating the Submit row runs validation and returns.
+    """
+    working = {f.name: f.default for f in fields}
+
+    scr = state.stdscr
+    if scr is None:
+        return _form_plain_input(fields, working)
+
+    win = None
+    focus_idx = 0
+    text_cursor = 0
+    last_focus_key = None
+    error_field = None
+    error_msg = ""
+
+    try:
+        while True:
+            visible_fields = [f for f in fields if f.visible_if is None or f.visible_if(working)]
+
+            # Snap any choice field whose value fell out of its (possibly
+            # dynamic) choice list back into range.
+            for f in visible_fields:
+                if f.kind == "choice":
+                    choices = _resolve(f.choices, working) or []
+                    if choices and working.get(f.name) not in choices:
+                        working[f.name] = choices[0]
+
+            num_rows = len(visible_fields) + 2  # + Submit + Cancel
+            focus_idx = max(0, min(focus_idx, num_rows - 1))
+            if focus_idx < len(visible_fields):
+                focus_key = visible_fields[focus_idx].name
+            elif focus_idx == len(visible_fields):
+                focus_key = "__submit__"
+            else:
+                focus_key = "__cancel__"
+
+            if focus_key != last_focus_key:
+                if focus_idx < len(visible_fields) and visible_fields[focus_idx].kind == "text":
+                    text_cursor = len(working.get(visible_fields[focus_idx].name, ""))
+                last_focus_key = focus_key
+
+            sh, sw = scr.getmaxyx()
+            labels = [_resolve(f.label, working) for f in visible_fields]
+            label_w = max([len(l) for l in labels], default=10)
+            value_w = max(
+                [len(working.get(f.name, "") or f.placeholder) for f in visible_fields],
+                default=10,
+            )
+            box_w = min(max(label_w + value_w + 10, 50), sw - 4)
+            box_h = min(len(visible_fields) + 6, sh - 2)  # fields + error + 2 buttons + hint + borders
+            box_w = max(box_w, 20)
+            box_h = max(box_h, 8)
+
+            if win is not None:
+                del win
+            win = _center_win(box_h, box_w)
+            win.keypad(True)
+            win.erase()
+            _draw_box(win, title)
+            inner_w = box_w - 4
+
+            for i, f in enumerate(visible_fields):
+                row = 1 + i
+                focused = i == focus_idx
+                label = labels[i]
+                value = working.get(f.name, "")
+                if f.kind == "choice":
+                    shown = f"◀ {value} ▶" if focused else value
+                else:
+                    shown = value or (f.placeholder if not focused else "")
+                line = f"{label}: {shown}"
+                attr = curses.A_REVERSE if (focused and f.kind == "choice") else curses.A_NORMAL
+                try:
+                    win.addstr(row, 2, line[:inner_w].ljust(inner_w), attr)
+                except curses.error:
+                    pass
+                if focused and f.kind == "text":
+                    cur = min(text_cursor, len(value))
+                    prefix_len = len(f"{label}: ")
+                    col = min(2 + prefix_len + cur, box_w - 2)
+                    try:
+                        win.move(row, col)
+                    except curses.error:
+                        pass
+
+            error_row = len(visible_fields) + 1
+            if error_msg:
+                try:
+                    win.addstr(error_row, 2, f"⚠ {error_msg}"[:inner_w], curses.A_DIM)
+                except curses.error:
+                    pass
+
+            submit_row = len(visible_fields) + 2
+            cancel_row = len(visible_fields) + 3
+            try:
+                win.addstr(
+                    submit_row, 2, "[ Submit ]",
+                    curses.A_REVERSE if focus_idx == len(visible_fields) else curses.A_BOLD,
+                )
+                win.addstr(
+                    cancel_row, 2, "[ Cancel ]",
+                    curses.A_REVERSE if focus_idx == len(visible_fields) + 1 else curses.A_NORMAL,
+                )
+                hint = "↑↓/Tab: move   Enter: edit/select   ESC: cancel"
+                win.addstr(box_h - 2, 2, hint[:inner_w], _HINT_STYLE)
+            except curses.error:
+                pass
+
+            if not (focus_idx < len(visible_fields) and visible_fields[focus_idx].kind == "text"):
+                curses.curs_set(0)
+            else:
+                curses.curs_set(1)
+
+            win.refresh()
+            key = win.getch()
+
+            if key == 27:  # ESC
+                return None
+            elif key in (curses.KEY_UP,) or key == curses.KEY_BTAB:
+                focus_idx = (focus_idx - 1) % num_rows
+                error_msg = ""
+            elif key in (curses.KEY_DOWN, 9):  # Down or Tab
+                focus_idx = (focus_idx + 1) % num_rows
+                error_msg = ""
+            elif focus_idx == len(visible_fields):  # Submit row
+                if key in (curses.KEY_ENTER, ord("\n"), ord("\r"), curses.KEY_LEFT, curses.KEY_RIGHT):
+                    failure = None
+                    for f in visible_fields:
+                        if f.validator is not None:
+                            ok, msg = f.validator(working.get(f.name, ""))
+                            if not ok:
+                                failure = (f, msg)
+                                break
+                    if failure is None:
+                        return dict(working)
+                    fail_field, fail_msg = failure
+                    focus_idx = visible_fields.index(fail_field)
+                    error_field = fail_field.name
+                    error_msg = fail_msg
+            elif focus_idx == len(visible_fields) + 1:  # Cancel row
+                if key in (curses.KEY_ENTER, ord("\n"), ord("\r"), curses.KEY_LEFT, curses.KEY_RIGHT):
+                    return None
+            else:
+                f = visible_fields[focus_idx]
+                if error_field == f.name:
+                    error_field = None
+                    error_msg = ""
+                if f.kind == "choice":
+                    choices = _resolve(f.choices, working) or []
+                    if choices:
+                        idx = choices.index(working[f.name]) if working.get(f.name) in choices else 0
+                        if key == curses.KEY_RIGHT:
+                            working[f.name] = choices[(idx + 1) % len(choices)]
+                        elif key == curses.KEY_LEFT:
+                            working[f.name] = choices[(idx - 1) % len(choices)]
+                        elif key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
+                            focus_idx = (focus_idx + 1) % num_rows
+                else:
+                    buf = list(working.get(f.name, ""))
+                    cur = min(text_cursor, len(buf))
+                    if key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
+                        focus_idx = (focus_idx + 1) % num_rows
+                    elif key in (curses.KEY_BACKSPACE, 8, 127):
+                        if cur > 0:
+                            buf.pop(cur - 1)
+                            cur -= 1
+                    elif key == curses.KEY_DC:
+                        if cur < len(buf):
+                            buf.pop(cur)
+                    elif key == curses.KEY_LEFT:
+                        cur = max(0, cur - 1)
+                    elif key == curses.KEY_RIGHT:
+                        cur = min(len(buf), cur + 1)
+                    elif key == curses.KEY_HOME:
+                        cur = 0
+                    elif key == curses.KEY_END:
+                        cur = len(buf)
+                    elif 32 <= key <= 126:
+                        buf.insert(cur, chr(key))
+                        cur += 1
+                    working[f.name] = "".join(buf)
+                    text_cursor = cur
+    finally:
+        curses.curs_set(0)
         del win
         _restore()
 

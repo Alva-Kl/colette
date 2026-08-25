@@ -18,7 +18,6 @@ from colette_cli.utils.config import (
     get_project_hook_path,
     load_config,
     load_projects,
-    load_templates,
     rename_machine_template_dir,
     require_machine,
     save_config,
@@ -109,7 +108,6 @@ def cmd_config_list_templates(args):
         err("no machine specified and no default machine set.")
     machine = require_machine(cfg, machine_name)
     templates = normalize_machine_templates(machine)
-    templates_cfg = load_templates()
     if not templates:
         print(f"No templates configured for machine '{machine_name}'.")
         return
@@ -119,9 +117,6 @@ def cmd_config_list_templates(args):
         source = template.get("path") or template.get("url") or "?"
         print(f"  {bold(tname)}  -  {template.get('type', 'directory')}  {source}")
         description = template.get("description")
-        if not description:
-            legacy = next((t for t in templates_cfg.get("templates", []) if t.get("name") == tname), {})
-            description = legacy.get("description")
         if description:
             print(f"    {description}")
         hooks_dir = get_machine_template_dir(machine_name, tname)
@@ -131,9 +126,6 @@ def cmd_config_list_templates(args):
             script_names = ", ".join(sorted(scripts))
             print(f"    hook files: {script_names}")
         params = template.get("params")
-        if not params:
-            legacy = next((t for t in templates_cfg.get("templates", []) if t.get("name") == tname), {})
-            params = legacy.get("params")
         if params:
             for pk, pv in params.items():
                 print(f"    param {pk}: {pv}")
@@ -150,6 +142,10 @@ def cmd_config_add_machine(args):
         err(
             f"machine '{name}' already exists. Use 'colette config edit-machine {name}' to modify."
         )
+    if name in all_template_names(cfg):
+        err(f"'{name}' is already used as a template name.")
+    if any(p["name"] == name for p in load_projects()):
+        err(f"'{name}' is already used as a project name.")
 
     mtype = input("Type (local/ssh) [local]: ").strip() or "local"
     if mtype not in ("local", "ssh"):
@@ -291,6 +287,67 @@ def cmd_config_remove_machine(args):
     info(f"Machine '{name}' removed.")
 
 
+def cmd_config_rename_machine(args):
+    """Rename a machine: the config key, its template-hooks directory, its
+    remote-cache file (if any), the default_machine pointer, and every
+    local project record's "machine" field.
+
+    Mirrors cmd_config_rename_template's approach. Only this machine's own
+    local projects.json can ever reference a machine by name (per the
+    documented schema, "machine" always names one of this config's own
+    type:"local" entries) — a remote connection stub's own projects live on
+    that remote, keyed by its own self-name, never by the controller's
+    connection name for it, so there is nothing to update there.
+    """
+    from colette_cli.utils.config import (
+        MACHINE_SCRIPTS_DIR,
+        get_machine_cache_path,
+        load_local_projects,
+        save_local_projects,
+    )
+
+    cfg = load_config()
+    old_name = args.old_name
+    new_name = args.new_name
+    machine = require_machine(cfg, old_name)
+    if new_name in cfg.get("machines", {}):
+        err(f"machine '{new_name}' already exists.")
+    if new_name in all_template_names(cfg):
+        err(f"'{new_name}' is already used as a template name.")
+    if any(p["name"] == new_name for p in load_projects()):
+        err(f"'{new_name}' is already used as a project name.")
+
+    machines = cfg.setdefault("machines", {})
+    del machines[old_name]
+    machines[new_name] = machine
+    if cfg.get("default_machine") == old_name:
+        cfg["default_machine"] = new_name
+    save_config(cfg)
+
+    old_dir = MACHINE_SCRIPTS_DIR / old_name
+    new_dir = MACHINE_SCRIPTS_DIR / new_name
+    if old_dir.exists() and not new_dir.exists():
+        old_dir.rename(new_dir)
+
+    old_cache = get_machine_cache_path(old_name)
+    new_cache = get_machine_cache_path(new_name)
+    if old_cache.exists() and not new_cache.exists():
+        old_cache.rename(new_cache)
+
+    projects = load_local_projects()
+    updated = 0
+    for project in projects:
+        if project.get("machine") == old_name:
+            project["machine"] = new_name
+            updated += 1
+    if updated:
+        save_local_projects(projects)
+
+    info(f"Machine '{old_name}' renamed to '{new_name}'.")
+    if updated:
+        info(f"Updated {updated} project(s) to use new machine name.")
+
+
 def cmd_config_set_default(args):
     """Set the default machine."""
     cfg = load_config()
@@ -302,30 +359,33 @@ def cmd_config_set_default(args):
     info(f"Default machine set to '{name}'.")
 
 
-def cmd_config_add_template(args):
-    """Add a template source and metadata to a machine."""
-    cfg = load_config()
-    machine = require_machine(cfg, args.machine_name)
+def apply_add_template(cfg, machine_name, name, template_type, source, description=None, params=None):
+    """Validate and persist a new template on a machine, scaffold its hook
+    files, and push to the remote if applicable.
+
+    Shared core for cmd_config_add_template (CLI, collects via input()) and
+    the TUI's _add_template_interactive (collects via form()) — kept in one
+    place so both stay in sync on validation and remote-push behavior.
+    Returns the new template entry dict.
+    """
+    machine = require_machine(cfg, machine_name)
     existing = list_machine_template_names(machine)
-    if args.template_name in existing:
-        err(
-            f"template '{args.template_name}' already exists on machine '{args.machine_name}'."
-        )
+    if name in existing:
+        err(f"template '{name}' already exists on machine '{machine_name}'.")
 
     projects = load_projects()
-    if any(p["name"] == args.template_name for p in projects):
-        err(f"'{args.template_name}' is already used as a project name.")
+    if any(p["name"] == name for p in projects):
+        err(f"'{name}' is already used as a project name.")
 
-    template_type = _prompt_template_type()
-    source = _prompt_template_source(template_type)
-    if template_type == "directory" and not source.strip():
+    if name in cfg.get("machines", {}):
+        err(f"'{name}' is already used as a machine name.")
+
+    if template_type == "directory" and not (source or "").strip():
         err("template path cannot be empty.")
-    if template_type == "git" and not source.strip():
+    if template_type == "git" and not (source or "").strip():
         err("template git URL cannot be empty.")
-    description = input("Description (optional): ").strip() or None
-    params = _parse_params(getattr(args, "params", None) or [])
 
-    entry = {"name": args.template_name, "type": template_type}
+    entry = {"name": name, "type": template_type}
     if template_type == "directory":
         entry["path"] = source
     else:
@@ -340,10 +400,66 @@ def cmd_config_add_template(args):
     machine["templates"] = machine_templates
     save_config(cfg)
 
-    scaffold_template_hook_files(args.template_name, args.machine_name)
+    scaffold_template_hook_files(name, machine_name)
+    _push_template_if_remote(machine, machine_name, name)
+    return entry
+
+
+def cmd_config_add_template(args):
+    """Add a template source and metadata to a machine."""
+    cfg = load_config()
+    machine = require_machine(cfg, args.machine_name)  # fail before prompting if invalid
+    if args.template_name in list_machine_template_names(machine):
+        err(f"template '{args.template_name}' already exists on machine '{args.machine_name}'.")
+    if any(p["name"] == args.template_name for p in load_projects()):
+        err(f"'{args.template_name}' is already used as a project name.")
+    if args.template_name in cfg.get("machines", {}):
+        err(f"'{args.template_name}' is already used as a machine name.")
+
+    template_type = _prompt_template_type()
+    source = _prompt_template_source(template_type)
+    description = input("Description (optional): ").strip() or None
+    params = _parse_params(getattr(args, "params", None) or [])
+
+    apply_add_template(cfg, args.machine_name, args.template_name, template_type, source, description, params)
     info(f"Hook files: {get_machine_template_dir(args.machine_name, args.template_name)}")
-    _push_template_if_remote(machine, args.machine_name, args.template_name)
     info(f"Template '{args.template_name}' added to machine '{args.machine_name}'.")
+
+
+def apply_edit_template(cfg, machine_name, template_name, template_type, source, description=None, params=None):
+    """Validate and persist edits to an existing template on a machine,
+    re-scaffold its hook files, and push to the remote if applicable.
+
+    Shared core for cmd_config_edit_template (CLI) and the TUI's
+    _edit_template_interactive. Returns the updated template entry dict.
+    """
+    machine = require_machine(cfg, machine_name)
+    machine_templates = normalize_machine_templates(machine)
+    template = next((item for item in machine_templates if item["name"] == template_name), None)
+    if not template:
+        err(f"template '{template_name}' not found on machine '{machine_name}'.")
+
+    if template_type == "directory" and not (source or "").strip():
+        err("template path cannot be empty.")
+    if template_type == "git" and not (source or "").strip():
+        err("template git URL cannot be empty.")
+
+    template.clear()
+    template.update({"name": template_name, "type": template_type})
+    if template_type == "directory":
+        template["path"] = source
+    else:
+        template["url"] = source
+    if description:
+        template["description"] = description
+    if params:
+        template["params"] = params
+    machine["templates"] = machine_templates
+    save_config(cfg)
+
+    scaffold_template_hook_files(template_name, machine_name)
+    _push_template_if_remote(machine, machine_name, template_name)
+    return template
 
 
 def cmd_config_edit_template(args):
@@ -363,50 +479,39 @@ def cmd_config_edit_template(args):
     template_type = _prompt_template_type(current_type)
     current_source = template.get("path") or template.get("url")
     source = _prompt_template_source(template_type, current_source)
-    if template_type == "directory" and not source.strip():
-        err("template path cannot be empty.")
-    if template_type == "git" and not source.strip():
-        err("template git URL cannot be empty.")
 
     cur_desc = template.get("description") or ""
-    templates_cfg = load_templates()
-    if not cur_desc:
-        legacy_meta = next(
-            (t for t in templates_cfg.get("templates", []) if t.get("name") == args.template_name),
-            {},
-        )
-        cur_desc = legacy_meta.get("description", "")
     description = input(f"Description [{cur_desc}]: ").strip() or cur_desc or None
 
     raw_params = getattr(args, "params", None)
-    if raw_params is not None:
-        params = _parse_params(raw_params)
-    else:
-        params = template.get("params")
-        if not params:
-            legacy_meta = next(
-                (t for t in templates_cfg.get("templates", []) if t.get("name") == args.template_name),
-                {},
-            )
-            params = legacy_meta.get("params")
+    params = _parse_params(raw_params) if raw_params is not None else template.get("params")
 
-    template.clear()
-    template.update({"name": args.template_name, "type": template_type})
-    if template_type == "directory":
-        template["path"] = source
-    else:
-        template["url"] = source
-    if description:
-        template["description"] = description
+    apply_edit_template(cfg, args.machine_name, args.template_name, template_type, source, description, params)
+    info(f"Hook files: {get_machine_template_dir(args.machine_name, args.template_name)}")
+    info(f"Template '{args.template_name}' updated on machine '{args.machine_name}'.")
+
+
+def cmd_config_set_template_params(cfg, machine_name, template_name, params):
+    """Set a template's custom parameters directly (no interactive I/O) and
+    push to the remote if applicable.
+
+    Used by the TUI's template-parameter screen (add/edit/remove a single
+    param) so those edits get the same remote-push treatment
+    cmd_config_edit_template's --param flag already gets from the CLI —
+    previously this screen mutated params with no push at all.
+    """
+    machine = require_machine(cfg, machine_name)
+    machine_templates = normalize_machine_templates(machine)
+    template = next((item for item in machine_templates if item["name"] == template_name), None)
+    if not template:
+        err(f"template '{template_name}' not found on machine '{machine_name}'.")
     if params:
         template["params"] = params
+    else:
+        template.pop("params", None)
     machine["templates"] = machine_templates
     save_config(cfg)
-
-    scaffold_template_hook_files(args.template_name, args.machine_name)
-    info(f"Hook files: {get_machine_template_dir(args.machine_name, args.template_name)}")
-    _push_template_if_remote(machine, args.machine_name, args.template_name)
-    info(f"Template '{args.template_name}' updated on machine '{args.machine_name}'.")
+    _push_template_if_remote(machine, machine_name, template_name)
 
 
 def cmd_config_edit_hook(args):
@@ -493,8 +598,8 @@ def cmd_config_run_template_update(args):
     template_name = args.template_name
     template_metadata = get_template_metadata(machine, machine_name, template_name)
 
-    from colette_cli.template.registry import get_machine_template
-    template_entry = get_machine_template(machine, template_name)
+    from colette_cli.template.registry import get_creatable_template
+    template_entry = get_creatable_template(machine, machine_name, template_name)
     template_path = (template_entry or {}).get("path")
 
     run_onupdate_for_template(
@@ -524,6 +629,9 @@ def cmd_config_rename_template(args):
     projects = load_projects()
     if any(p["name"] == new_name for p in projects):
         err(f"'{new_name}' is already used as a project name.")
+
+    if new_name in cfg.get("machines", {}):
+        err(f"'{new_name}' is already used as a machine name.")
 
     template["name"] = new_name
     machine["templates"] = machine_templates
@@ -635,5 +743,7 @@ def cmd_config(args):
         cmd_config_sync(args)
     elif args.config_cmd == "rename-template":
         cmd_config_rename_template(args)
+    elif args.config_cmd == "rename-machine":
+        cmd_config_rename_machine(args)
     else:
         args.config_parser.print_help()

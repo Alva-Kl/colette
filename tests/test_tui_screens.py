@@ -7,7 +7,6 @@ from unittest.mock import patch, MagicMock
 from tests.conftest import (
     write_config,
     write_projects,
-    write_templates,
     make_local_machine,
     make_project,
 )
@@ -233,23 +232,63 @@ class TestProjectListItems:
         from colette_cli.utils.config import save_config
         save_config(LOCAL_CFG)
         with patch("colette_cli.project.cmd_create") as mock_create, \
-             patch("colette_cli.tui.forms.ask", side_effect=["new-proj", "local", ""]), \
+             patch("colette_cli.tui.forms.form",
+                   return_value={"name": "new-proj", "machine": "local", "template": "(none)"}), \
              patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
             next(i for i in items if i.label == "Create project").run()
         mock_create.assert_called_once()
-        assert mock_create.call_args[0][0].name == "new-proj"
+        args = mock_create.call_args[0][0]
+        assert args.name == "new-proj"
+        assert args.machine == "local"
+        assert args.template is None
 
-    def test_create_project_aborts_on_empty_name(self, tmp_config):
+    def test_create_project_uses_selected_template(self, tmp_config):
         from colette_cli.utils.config import save_config
         save_config(LOCAL_CFG)
         with patch("colette_cli.project.cmd_create") as mock_create, \
-             patch("colette_cli.tui.forms.ask", return_value=None):
+             patch("colette_cli.tui.forms.form",
+                   return_value={"name": "new-proj", "machine": "local", "template": "my-tmpl"}), \
+             patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
+            from colette_cli.tui.screens import project_list_items
+            items = project_list_items()
+            next(i for i in items if i.label == "Create project").run()
+        assert mock_create.call_args[0][0].template == "my-tmpl"
+
+    def test_create_project_aborts_on_form_cancel(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        save_config(LOCAL_CFG)
+        with patch("colette_cli.project.cmd_create") as mock_create, \
+             patch("colette_cli.tui.forms.form", return_value=None):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
             next(i for i in items if i.label == "Create project").run()
         mock_create.assert_not_called()
+
+    def test_create_project_name_validator_rejects_existing_machine_name(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        cfg = {
+            "machines": {
+                "local": {"type": "local", "projects_dir": "/tmp/projects"},
+                "other-machine": {"type": "local"},
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        from colette_cli.tui.screens import project_list_items
+        items = project_list_items()
+        captured = {}
+
+        def _fake_form(fields, title=""):
+            captured["fields"] = fields
+            return None
+
+        with patch("colette_cli.tui.forms.form", side_effect=_fake_form):
+            next(i for i in items if i.label == "Create project").run()
+        name_field = next(f for f in captured["fields"] if f.name == "name")
+        ok, _ = name_field.validator("other-machine")
+        assert ok is False
 
     def test_link_project_calls_cmd_link(self, tmp_config, tmp_path):
         from colette_cli.utils.config import save_config
@@ -257,18 +296,22 @@ class TestProjectListItems:
         project_dir = tmp_path / "mydir"
         project_dir.mkdir()
         with patch("colette_cli.project.cmd_link") as mock_link, \
-             patch("colette_cli.tui.forms.ask", side_effect=[str(project_dir), "local", ""]):
+             patch("colette_cli.tui.forms.form",
+                   return_value={"path": str(project_dir), "machine": "local", "name": ""}):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
             next(i for i in items if i.label == "Link project").run()
         mock_link.assert_called_once()
-        assert mock_link.call_args[0][0].path == str(project_dir)
+        args = mock_link.call_args[0][0]
+        assert args.path == str(project_dir)
+        assert args.machine == "local"
+        assert args.name is None
 
-    def test_link_project_aborts_on_empty_path(self, tmp_config):
+    def test_link_project_aborts_on_form_cancel(self, tmp_config):
         from colette_cli.utils.config import save_config
         save_config(LOCAL_CFG)
         with patch("colette_cli.project.cmd_link") as mock_link, \
-             patch("colette_cli.tui.forms.ask", return_value=None):
+             patch("colette_cli.tui.forms.form", return_value=None):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
             next(i for i in items if i.label == "Link project").run()
@@ -389,110 +432,60 @@ class TestProjectActionItems:
 
 
 # ---------------------------------------------------------------------------
-# template_action_items
+# machine_template_action_items (unified per-template action set)
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# template_list_items
-# ---------------------------------------------------------------------------
+class TestMachineTemplateActionItems:
+    def test_returns_unified_action_set(self, tmp_config):
+        from colette_cli.tui.screens import machine_template_action_items
+        labels = _item_labels(machine_template_action_items("local", "my-tmpl"))
+        assert labels == [
+            "Create project", "Run update", "Edit hooks", "Edit parameters",
+            "Edit", "Rename", "Remove",
+        ]
 
-class TestTemplateListItems:
-    def _cfg_with_templates(self, machine_templates):
-        """Build a config dict with machines each having a list of template names."""
-        machines = {}
-        for machine_name, tmpl_names in machine_templates.items():
-            machines[machine_name] = {
-                "type": "local",
-                "projects_dir": f"/tmp/{machine_name}/projects",
-                "templates": [{"name": t, "type": "directory", "path": f"/tmp/{t}"} for t in tmpl_names],
-            }
-        default = next(iter(machines)) if machines else None
-        return {"machines": machines, "default_machine": default}
-
-    def test_no_templates_shows_placeholder(self, tmp_config):
-        from colette_cli.utils.config import save_config
-        from colette_cli.tui.screens import template_list_items
-        save_config({"machines": {"local": make_local_machine()}, "default_machine": "local"})
-        items = template_list_items()
-        assert len(items) == 1
-        assert items[0].label == "(no templates)"
-
-    def test_single_machine_shows_header_and_template(self, tmp_config):
-        from colette_cli.utils.config import save_config
-        from colette_cli.tui.screens import template_list_items
-        save_config(self._cfg_with_templates({"local": ["web"]}))
-        labels = _item_labels(template_list_items())
-        assert "── local (default) ──" in labels
-        assert "web" in labels
-
-    def test_same_name_templates_on_two_machines_both_appear(self, tmp_config):
-        from colette_cli.utils.config import save_config
-        from colette_cli.tui.screens import template_list_items
-        cfg = self._cfg_with_templates({"alpha": ["shared"], "beta": ["shared"]})
-        cfg["default_machine"] = "alpha"
-        save_config(cfg)
-        labels = _item_labels(template_list_items())
-        # header for each machine
-        assert "── alpha (default) ──" in labels
-        assert "── beta ──" in labels
-        # template appears twice (once per machine)
-        assert labels.count("shared") == 2
-
-    def test_templates_sorted_within_machine(self, tmp_config):
-        from colette_cli.utils.config import save_config
-        from colette_cli.tui.screens import template_list_items
-        save_config(self._cfg_with_templates({"local": ["zebra", "alpha", "middle"]}))
-        labels = _item_labels(template_list_items())
-        tmpl_labels = [l for l in labels if not l.startswith("──")]
-        assert tmpl_labels == sorted(tmpl_labels)
-
-    def test_default_machine_appears_first(self, tmp_config):
-        from colette_cli.utils.config import save_config
-        from colette_cli.tui.screens import template_list_items
-        cfg = self._cfg_with_templates({"zzz": ["t1"], "aaa": ["t2"]})
-        cfg["default_machine"] = "zzz"
-        save_config(cfg)
-        labels = _item_labels(template_list_items())
-        header_indices = {l: labels.index(l) for l in labels if l.startswith("──")}
-        assert header_indices["── zzz (default) ──"] < header_indices["── aaa ──"]
-
-    def test_template_action_children_bound_to_correct_machine(self, tmp_config):
-        from colette_cli.utils.config import save_config
-        from colette_cli.tui.screens import template_list_items
-        cfg = self._cfg_with_templates({"m1": ["tmpl"], "m2": ["tmpl"]})
-        cfg["default_machine"] = "m1"
-        save_config(cfg)
-        items = template_list_items()
-        tmpl_items = [i for i in items if i.label == "tmpl"]
-        assert len(tmpl_items) == 2
-        # Each submenu should be bound to a different machine: verify _run_update
-        # uses the right machine by checking that children() returns action items
-        for ti in tmpl_items:
-            actions = ti.get_children()
-            assert any(a.label == "Run update" for a in actions)
-
-
-class TestTemplateActionItems:
-    def test_returns_create_edit_hooks_edit_parameters(self, tmp_config):
-        from colette_cli.tui.screens import template_action_items
-        labels = _item_labels(template_action_items("my-tmpl", "local"))
-        assert labels == ["Create project", "Run update", "Edit hooks", "Edit parameters", "Rename", "Change path"]
+    def test_run_update_resolves_cache_only_template_path(self, tmp_config):
+        """Regression: 'Run update' on a template known only via the sync
+        cache (never explicitly configured on this machine) must still
+        resolve a real template_path — previously used get_machine_template
+        (config-only), which silently dropped the path for cache-only
+        templates."""
+        from colette_cli.utils.config import save_config, save_machine_cache
+        from colette_cli.tui.screens import machine_template_action_items
+        save_config({
+            "machines": {"remote": {"type": "ssh", "host": "user@remote", "projects_dir": "/home/user"}},
+            "default_machine": "remote",
+        })
+        save_machine_cache("remote", {
+            "machine": "remote", "synced_at": "x", "projects_dir": "/home/user",
+            "templates": [{"name": "cached-tmpl", "type": "directory", "path": "/remote/tmpl/path"}],
+            "projects": [],
+        })
+        items = machine_template_action_items("remote", "cached-tmpl")
+        run_update = next(i for i in items if i.label == "Run update")
+        with patch("colette_cli.template.run_onupdate_for_template") as mock_run, \
+             patch("threading.Thread", _SyncThread), \
+             patch("colette_cli.utils.notify.send_notification"), \
+             patch("colette_cli.tui.forms.show_running"):
+            run_update.run()
+        mock_run.assert_called_once()
+        assert mock_run.call_args.kwargs["template_path"] == "/remote/tmpl/path"
 
     def test_edit_hooks_is_submenu(self, tmp_config):
-        from colette_cli.tui.screens import template_action_items
-        edit_hooks = next(i for i in template_action_items("my-tmpl", "local") if i.label == "Edit hooks")
+        from colette_cli.tui.screens import machine_template_action_items
+        edit_hooks = next(i for i in machine_template_action_items("local", "my-tmpl") if i.label == "Edit hooks")
         assert not edit_hooks.is_leaf
 
     def test_edit_parameters_is_submenu(self, tmp_config):
-        from colette_cli.tui.screens import template_action_items
-        edit_params = next(i for i in template_action_items("my-tmpl", "local") if i.label == "Edit parameters")
+        from colette_cli.tui.screens import machine_template_action_items
+        edit_params = next(i for i in machine_template_action_items("local", "my-tmpl") if i.label == "Edit parameters")
         assert not edit_params.is_leaf
 
     def test_create_project_calls_cmd_create_with_correct_machine(self, tmp_config):
         from colette_cli.utils.config import save_config
-        from colette_cli.tui.screens import template_action_items
+        from colette_cli.tui.screens import machine_template_action_items
         save_config(LOCAL_CFG)
-        items = template_action_items("my-tmpl", "local")
+        items = machine_template_action_items("local", "my-tmpl")
         create = next(i for i in items if i.label == "Create project")
         with patch("colette_cli.project.cmd_create") as mock_create, \
              patch("colette_cli.tui.forms.ask", return_value="new-proj"), \
@@ -506,18 +499,18 @@ class TestTemplateActionItems:
 
     def test_create_project_aborts_on_empty_name(self, tmp_config):
         from colette_cli.utils.config import save_config
-        from colette_cli.tui.screens import template_action_items
+        from colette_cli.tui.screens import machine_template_action_items
         save_config(LOCAL_CFG)
-        items = template_action_items("my-tmpl", "local")
+        items = machine_template_action_items("local", "my-tmpl")
         create = next(i for i in items if i.label == "Create project")
         with patch("colette_cli.project.cmd_create") as mock_create, \
              patch("colette_cli.tui.forms.ask", return_value=None):
             create.run()
         mock_create.assert_not_called()
 
-    def test_change_path_updates_config(self, tmp_config):
+    def test_edit_updates_template_source(self, tmp_config):
         from colette_cli.utils.config import save_config, load_config
-        from colette_cli.tui.screens import template_action_items
+        from colette_cli.tui.screens import machine_template_action_items
         save_config({
             "machines": {
                 "local": {
@@ -528,17 +521,18 @@ class TestTemplateActionItems:
             },
             "default_machine": "local",
         })
-        items = template_action_items("my-tmpl", "local")
-        change_path = next(i for i in items if i.label == "Change path")
-        with patch("colette_cli.tui.forms.ask", return_value="/new/path"):
-            change_path.run()
+        items = machine_template_action_items("local", "my-tmpl")
+        edit = next(i for i in items if i.label == "Edit")
+        with patch("colette_cli.tui.forms.form",
+                   return_value={"type": "directory", "source": "/new/path", "description": ""}):
+            edit.run()
         cfg = load_config()
         tmpl = next(t for t in cfg["machines"]["local"]["templates"] if t["name"] == "my-tmpl")
         assert tmpl["path"] == "/new/path"
 
-    def test_change_path_aborts_on_empty(self, tmp_config):
+    def test_edit_aborts_on_form_cancel(self, tmp_config):
         from colette_cli.utils.config import save_config, load_config
-        from colette_cli.tui.screens import template_action_items
+        from colette_cli.tui.screens import machine_template_action_items
         save_config({
             "machines": {
                 "local": {
@@ -549,13 +543,75 @@ class TestTemplateActionItems:
             },
             "default_machine": "local",
         })
-        items = template_action_items("my-tmpl", "local")
-        change_path = next(i for i in items if i.label == "Change path")
-        with patch("colette_cli.tui.forms.ask", return_value=""):
-            change_path.run()
+        items = machine_template_action_items("local", "my-tmpl")
+        edit = next(i for i in items if i.label == "Edit")
+        with patch("colette_cli.tui.forms.form", return_value=None):
+            edit.run()
         cfg = load_config()
         tmpl = next(t for t in cfg["machines"]["local"]["templates"] if t["name"] == "my-tmpl")
         assert tmpl["path"] == "/old/path"
+
+    def test_rename_renames_template(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.tui.screens import machine_template_action_items
+        save_config({
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": "/tmp/projects",
+                    "templates": [{"name": "my-tmpl", "type": "directory", "path": "/tmp/path"}],
+                }
+            },
+            "default_machine": "local",
+        })
+        items = machine_template_action_items("local", "my-tmpl")
+        rename = next(i for i in items if i.label == "Rename")
+        with patch("colette_cli.tui.forms.ask", return_value="renamed-tmpl"):
+            rename.run()
+        cfg = load_config()
+        names = [t["name"] for t in cfg["machines"]["local"]["templates"]]
+        assert "renamed-tmpl" in names
+        assert "my-tmpl" not in names
+
+    def test_remove_removes_template(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.tui.screens import machine_template_action_items
+        save_config({
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": "/tmp/projects",
+                    "templates": [{"name": "my-tmpl", "type": "directory", "path": "/tmp/path"}],
+                }
+            },
+            "default_machine": "local",
+        })
+        items = machine_template_action_items("local", "my-tmpl")
+        remove = next(i for i in items if i.label == "Remove")
+        with patch("colette_cli.tui.forms.confirm", return_value=True):
+            remove.run()
+        cfg = load_config()
+        assert not any(t["name"] == "my-tmpl" for t in cfg["machines"]["local"].get("templates", []))
+
+    def test_remove_aborts_on_cancel(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.tui.screens import machine_template_action_items
+        save_config({
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": "/tmp/projects",
+                    "templates": [{"name": "my-tmpl", "type": "directory", "path": "/tmp/path"}],
+                }
+            },
+            "default_machine": "local",
+        })
+        items = machine_template_action_items("local", "my-tmpl")
+        remove = next(i for i in items if i.label == "Remove")
+        with patch("colette_cli.tui.forms.confirm", return_value=False):
+            remove.run()
+        cfg = load_config()
+        assert any(t["name"] == "my-tmpl" for t in cfg["machines"]["local"].get("templates", []))
 
 
 # ---------------------------------------------------------------------------
@@ -669,21 +725,8 @@ class TestTemplateParamItems:
 
 
 # ---------------------------------------------------------------------------
-# config_menu_items / machine_list_items / machine_action_items
+# machine_list_items / machine_action_items
 # ---------------------------------------------------------------------------
-
-class TestConfigMenuItems:
-    def test_has_machines_and_projects(self, tmp_config):
-        from colette_cli.tui.screens import config_menu_items
-        labels = _item_labels(config_menu_items())
-        assert "Machines" in labels
-        assert "Projects" in labels
-
-    def test_both_are_submenus(self, tmp_config):
-        from colette_cli.tui.screens import config_menu_items
-        for item in config_menu_items():
-            assert not item.is_leaf
-
 
 class TestMachineListItems:
     def test_add_machine_is_first_item(self, tmp_config):
@@ -716,19 +759,21 @@ class TestMachineListItems:
         from colette_cli.utils.config import load_config
         from colette_cli.tui.screens import machine_list_items
         items = machine_list_items()
-        with patch("colette_cli.tui.forms.ask", side_effect=["newmachine", "local", "", "/projects"]), \
-             patch("colette_cli.tui.forms.confirm", return_value=False):
+        with patch("colette_cli.tui.forms.form", return_value={
+            "name": "newmachine", "type": "local", "projects_dir": "/projects",
+            "add_template": "no",
+        }):
             next(i for i in items if i.label == "Add machine").run()
         cfg = load_config()
         assert "newmachine" in cfg["machines"]
         assert cfg["machines"]["newmachine"]["projects_dir"] == "/projects"
         assert cfg["machines"]["newmachine"]["type"] == "local"
 
-    def test_add_machine_aborts_on_empty_name(self, tmp_config):
+    def test_add_machine_aborts_on_form_cancel(self, tmp_config):
         from colette_cli.utils.config import load_config
         from colette_cli.tui.screens import machine_list_items
         items = machine_list_items()
-        with patch("colette_cli.tui.forms.ask", return_value=None):
+        with patch("colette_cli.tui.forms.form", return_value=None):
             next(i for i in items if i.label == "Add machine").run()
         assert not load_config().get("machines")
 
@@ -736,10 +781,11 @@ class TestMachineListItems:
         from colette_cli.utils.config import load_config
         from colette_cli.tui.screens import machine_list_items
         items = machine_list_items()
-        # name, type=ssh, host, port (empty → skip), key (empty → skip), colette_path (empty → skip), no initial template, projects_dir, no set-default
-        with patch("colette_cli.tui.forms.ask",
-                   side_effect=["sshm", "ssh", "dev@myhost", "", "", "", "", "/projects"]), \
-             patch("colette_cli.tui.forms.confirm", return_value=False):
+        with patch("colette_cli.tui.forms.form", return_value={
+            "name": "sshm", "type": "ssh", "host": "dev@myhost",
+            "port": "", "ssh_key": "", "colette_path": "",
+            "projects_dir": "/projects", "add_template": "no",
+        }):
             next(i for i in items if i.label == "Add machine").run()
         cfg = load_config()
         assert "sshm" in cfg["machines"]
@@ -754,39 +800,239 @@ class TestMachineListItems:
         from colette_cli.utils.config import load_config
         from colette_cli.tui.screens import machine_list_items
         items = machine_list_items()
-        # name, type=ssh, host, port=24, key (empty → skip), colette_path (empty → skip), no initial template, projects_dir, no set-default
-        with patch("colette_cli.tui.forms.ask",
-                   side_effect=["sshm", "ssh", "dev@myhost", "24", "", "", "", "/projects"]), \
-             patch("colette_cli.tui.forms.confirm", return_value=False):
+        with patch("colette_cli.tui.forms.form", return_value={
+            "name": "sshm", "type": "ssh", "host": "dev@myhost",
+            "port": "24", "ssh_key": "", "colette_path": "",
+            "projects_dir": "/projects", "add_template": "no",
+        }):
             next(i for i in items if i.label == "Add machine").run()
         cfg = load_config()
         m = cfg["machines"]["sshm"]
         assert m["port"] == 24
 
+    def test_add_machine_with_initial_template(self, tmp_config):
+        from colette_cli.utils.config import load_config
+        from colette_cli.tui.screens import machine_list_items
+        items = machine_list_items()
+        with patch("colette_cli.tui.forms.form", return_value={
+            "name": "newmachine", "type": "local", "projects_dir": "/projects",
+            "add_template": "yes", "template_name": "web", "template_type": "directory",
+            "template_source": "/tmpl/web",
+        }):
+            next(i for i in items if i.label == "Add machine").run()
+        cfg = load_config()
+        tmpl = cfg["machines"]["newmachine"]["templates"][0]
+        assert tmpl["name"] == "web"
+        assert tmpl["path"] == "/tmpl/web"
+
+    def test_add_machine_name_validator_rejects_existing_template_name(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.tui.screens import machine_list_items
+        save_config({
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "templates": [{"name": "my-tmpl", "type": "directory", "path": "/tmp/tmpl"}],
+                }
+            },
+            "default_machine": "local",
+        })
+        items = machine_list_items()
+        captured = {}
+
+        def _fake_form(fields, title=""):
+            captured["fields"] = fields
+            return None
+
+        with patch("colette_cli.tui.forms.form", side_effect=_fake_form):
+            next(i for i in items if i.label == "Add machine").run()
+        name_field = next(f for f in captured["fields"] if f.name == "name")
+        ok, _ = name_field.validator("my-tmpl")
+        assert ok is False
+
+    def test_add_machine_name_validator_rejects_existing_project_name(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.tui.screens import machine_list_items
+        save_config(LOCAL_CFG)
+        save_local_projects([{"name": "my-project", "machine": "local", "path": "/tmp/my-project"}])
+        items = machine_list_items()
+        captured = {}
+
+        def _fake_form(fields, title=""):
+            captured["fields"] = fields
+            return None
+
+        with patch("colette_cli.tui.forms.form", side_effect=_fake_form):
+            next(i for i in items if i.label == "Add machine").run()
+        name_field = next(f for f in captured["fields"] if f.name == "name")
+        ok, _ = name_field.validator("my-project")
+        assert ok is False
+
 
 class TestMachineActionItems:
-    def test_returns_edit_set_default_templates_remove(self, tmp_config):
+    def test_returns_edit_set_default_rename_templates_projects_remove(self, tmp_config):
         from colette_cli.tui.screens import machine_action_items
         labels = _item_labels(machine_action_items("local"))
         assert "Edit" in labels
         assert "Set as default" in labels
+        assert "Rename" in labels
         assert "Templates" in labels
+        assert "Projects" in labels
         assert "Remove" in labels
+
+    def test_terminal_is_first_action_for_local_machine(self, tmp_config):
+        from colette_cli.tui.screens import machine_action_items
+        labels = _item_labels(machine_action_items("local"))
+        assert labels[0] == "Terminal"
+
+    def test_terminal_is_first_action_after_status_line_for_ssh_machine(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        save_config({
+            "machines": {"remote": {"type": "ssh", "host": "user@server", "projects_dir": "/projects"}},
+            "default_machine": "remote",
+        })
+        from colette_cli.tui.screens import machine_action_items
+        labels = _item_labels(machine_action_items("remote"))
+        assert labels[0].startswith("Last synced")
+        assert labels[1] == "Terminal"
+
+    def test_terminal_calls_cmd_attach_with_correct_machine_name(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        save_config(LOCAL_CFG)
+        from colette_cli.tui.screens import machine_action_items
+        with patch("colette_cli.project.cmd_attach") as mock_attach, \
+             patch("curses.endwin"), patch("curses.doupdate"):
+            items = machine_action_items("local")
+            next(i for i in items if i.label == "Terminal").run()
+        mock_attach.assert_called_once()
+        assert mock_attach.call_args[0][0].name == "local"
+
+    def test_terminal_system_exit_does_not_propagate(self, tmp_config):
+        """Terminal is wrapped in _suspend, so an err()-raised SystemExit from
+        the backend (e.g. unknown machine) must not crash the TUI."""
+        from colette_cli.utils.config import save_config
+        save_config(LOCAL_CFG)
+        from colette_cli.tui.screens import machine_action_items
+        with patch("colette_cli.project.cmd_attach", side_effect=SystemExit(1)), \
+             patch("curses.endwin"), patch("curses.doupdate"), patch("builtins.input"):
+            items = machine_action_items("local")
+            next(i for i in items if i.label == "Terminal").run()  # must not raise
 
     def test_templates_is_submenu(self, tmp_config):
         from colette_cli.tui.screens import machine_action_items
         templates = next(i for i in machine_action_items("local") if i.label == "Templates")
         assert not templates.is_leaf
 
+    def test_projects_is_submenu(self, tmp_config):
+        from colette_cli.tui.screens import machine_action_items
+        projects = next(i for i in machine_action_items("local") if i.label == "Projects")
+        assert not projects.is_leaf
+
     def test_edit_updates_machine_config(self, tmp_config):
         from colette_cli.utils.config import save_config, load_config
         save_config(LOCAL_CFG)
         from colette_cli.tui.screens import machine_action_items
         items = machine_action_items("local")
-        with patch("colette_cli.tui.forms.ask", side_effect=["local", "/new/projects"]):
+        with patch("colette_cli.tui.forms.form", return_value={
+            "type": "local", "projects_dir": "/new/projects",
+            "agent_command": "", "ide_command": "",
+        }):
             next(i for i in items if i.label == "Edit").run()
         cfg = load_config()
         assert cfg["machines"]["local"]["projects_dir"] == "/new/projects"
+
+    def test_edit_aborts_on_form_cancel(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        save_config(LOCAL_CFG)
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("local")
+        with patch("colette_cli.tui.forms.form", return_value=None):
+            next(i for i in items if i.label == "Edit").run()
+        assert load_config()["machines"]["local"]["projects_dir"] == "/tmp/projects"
+
+    def test_edit_machine_aborts_when_machine_missing(self, tmp_config):
+        """edit action is a no-op when the machine no longer exists in config."""
+        from colette_cli.utils.config import save_config
+        save_config(LOCAL_CFG)
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("ghost")
+        with patch("colette_cli.tui.forms.form") as mock_form:
+            next(i for i in items if i.label == "Edit").run()
+        mock_form.assert_not_called()
+
+    def test_edit_ssh_fields_saved(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        save_config({
+            "machines": {"remote": {"type": "ssh", "host": "old@host", "projects_dir": "/projects"}},
+            "default_machine": "remote",
+        })
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("remote")
+        with patch("colette_cli.tui.forms.form", return_value={
+            "type": "ssh", "host": "new@host", "port": "24",
+            "ssh_key": "/key/path", "colette_path": "/usr/local/bin/colette",
+            "projects_dir": "/projects", "agent_command": "", "ide_command": "",
+        }):
+            next(i for i in items if i.label == "Edit").run()
+        m = load_config()["machines"]["remote"]
+        assert m["host"] == "new@host"
+        assert m["port"] == 24
+        assert m["ssh_key"] == "/key/path"
+        assert m["colette_path"] == "/usr/local/bin/colette"
+
+    def test_edit_switching_to_local_clears_ssh_fields(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        save_config({
+            "machines": {"remote": {
+                "type": "ssh", "host": "old@host", "port": 22,
+                "ssh_key": "/key", "colette_path": "/bin/colette",
+                "projects_dir": "/projects",
+            }},
+            "default_machine": "remote",
+        })
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("remote")
+        with patch("colette_cli.tui.forms.form", return_value={
+            "type": "local", "projects_dir": "/projects",
+            "agent_command": "", "ide_command": "",
+        }):
+            next(i for i in items if i.label == "Edit").run()
+        m = load_config()["machines"]["remote"]
+        assert "host" not in m
+        assert "port" not in m
+        assert "ssh_key" not in m
+        assert "colette_path" not in m
+
+    def test_edit_folds_in_agent_and_ide_command(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        save_config(LOCAL_CFG)
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("local")
+        with patch("colette_cli.tui.forms.form", return_value={
+            "type": "local", "projects_dir": "/tmp/projects",
+            "agent_command": "claude --resume", "ide_command": "code-insiders",
+        }):
+            next(i for i in items if i.label == "Edit").run()
+        m = load_config()["machines"]["local"]
+        assert m["agent_command"] == "claude --resume"
+        assert m["ide_command"] == "code-insiders"
+
+    def test_edit_clears_agent_and_ide_command_when_blank(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        cfg = dict(LOCAL_CFG["machines"]["local"])
+        cfg["agent_command"] = "old --agent"
+        cfg["ide_command"] = "old-ide"
+        save_config({"machines": {"local": cfg}, "default_machine": "local"})
+        from colette_cli.tui.screens import machine_action_items
+        items = machine_action_items("local")
+        with patch("colette_cli.tui.forms.form", return_value={
+            "type": "local", "projects_dir": "/tmp/projects",
+            "agent_command": "", "ide_command": "",
+        }):
+            next(i for i in items if i.label == "Edit").run()
+        m = load_config()["machines"]["local"]
+        assert "agent_command" not in m
+        assert "ide_command" not in m
 
     def test_remove_machine_removes_from_config(self, tmp_config):
         from colette_cli.utils.config import save_config, load_config
@@ -805,16 +1051,6 @@ class TestMachineActionItems:
         with patch("colette_cli.tui.forms.confirm", return_value=False):
             next(i for i in items if i.label == "Remove").run()
         assert "local" in load_config().get("machines", {})
-
-    def test_edit_aborts_on_esc(self, tmp_config):
-        from colette_cli.utils.config import save_config, load_config
-        save_config(LOCAL_CFG)
-        from colette_cli.tui.screens import machine_action_items
-        items = machine_action_items("local")
-        with patch("colette_cli.tui.forms.ask", return_value=None):
-            next(i for i in items if i.label == "Edit").run()
-        # Config unchanged
-        assert load_config()["machines"]["local"]["projects_dir"] == "/tmp/projects"
 
     def test_remove_machine_clears_default_when_only_machine(self, tmp_config):
         from colette_cli.utils.config import save_config, load_config
@@ -844,20 +1080,18 @@ class TestMachineActionItems:
         assert loaded["default_machine"] == "local"
         assert "other" not in loaded["machines"]
 
-    def test_edit_machine_aborts_when_machine_missing(self, tmp_config):
-        """edit action is a no-op when the machine no longer exists in config."""
-        from colette_cli.utils.config import save_config, load_config
-        save_config(LOCAL_CFG)
+    def test_last_synced_shown_for_ssh_machine(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_machine_cache
+        save_config({
+            "machines": {"remote": {"type": "ssh", "host": "user@server", "projects_dir": "/projects"}},
+            "default_machine": "remote",
+        })
+        save_machine_cache("remote", {"synced_at": "2026-01-01T00:00:00Z", "projects": [], "templates": []})
         from colette_cli.tui.screens import machine_action_items
-        # Capture the action closure while 'local' exists, then delete it from config
-        items = machine_action_items("ghost")
-        original_cfg = load_config()
-        with patch("colette_cli.tui.forms.ask") as mock_ask:
-            next(i for i in items if i.label == "Edit").run()
-        # ask should never be called — the machine was not found
-        mock_ask.assert_not_called()
+        labels = _item_labels(machine_action_items("remote"))
+        assert "Last synced: 2026-01-01T00:00:00Z" in labels
 
-    def test_has_set_colette_path_action(self, tmp_config):
+    def test_last_synced_never_when_no_cache(self, tmp_config):
         from colette_cli.utils.config import save_config
         save_config({
             "machines": {"remote": {"type": "ssh", "host": "user@server", "projects_dir": "/projects"}},
@@ -865,65 +1099,16 @@ class TestMachineActionItems:
         })
         from colette_cli.tui.screens import machine_action_items
         labels = _item_labels(machine_action_items("remote"))
-        assert "Set colette path" in labels
+        assert "Last synced: never" in labels
 
-    def test_set_colette_path_not_shown_for_local_machine(self, tmp_config):
+    def test_last_synced_not_shown_for_local_machine(self, tmp_config):
         from colette_cli.utils.config import save_config
         save_config(LOCAL_CFG)
         from colette_cli.tui.screens import machine_action_items
         labels = _item_labels(machine_action_items("local"))
-        assert "Set colette path" not in labels
+        assert not any(l.startswith("Last synced") for l in labels)
 
-    def test_set_colette_path_saves_to_config(self, tmp_config):
-        from colette_cli.utils.config import save_config, load_config
-        save_config({
-            "machines": {
-                "remote": {
-                    "type": "ssh",
-                    "host": "user@server",
-                    "projects_dir": "/projects",
-                }
-            },
-            "default_machine": "remote",
-        })
-        from colette_cli.tui.screens import machine_action_items
-        items = machine_action_items("remote")
-        set_path = next(i for i in items if i.label == "Set colette path")
-        with patch("colette_cli.tui.forms.ask", return_value="/usr/local/bin/colette"):
-            set_path.run()
-        cfg = load_config()
-        assert cfg["machines"]["remote"]["colette_path"] == "/usr/local/bin/colette"
-
-    def test_set_colette_path_clears_on_empty(self, tmp_config):
-        from colette_cli.utils.config import save_config, load_config
-        save_config({
-            "machines": {
-                "remote": {
-                    "type": "ssh",
-                    "host": "user@server",
-                    "projects_dir": "/projects",
-                    "colette_path": "/old/colette",
-                }
-            },
-            "default_machine": "remote",
-        })
-        from colette_cli.tui.screens import machine_action_items
-        items = machine_action_items("remote")
-        set_path = next(i for i in items if i.label == "Set colette path")
-        with patch("colette_cli.tui.forms.ask", return_value=""):
-            set_path.run()
-        cfg = load_config()
-        assert "colette_path" not in cfg["machines"]["remote"]
-
-    def test_set_colette_path_skips_local_machine(self, tmp_config):
-        # "Set colette path" must not appear in local machine items at all
-        from colette_cli.utils.config import save_config
-        save_config(LOCAL_CFG)
-        from colette_cli.tui.screens import machine_action_items
-        items = machine_action_items("local")
-        assert not any(i.label == "Set colette path" for i in items)
-
-    def test_has_sync_colette_action(self, tmp_config):
+    def test_sync_action_shown_only_for_ssh_machine(self, tmp_config):
         from colette_cli.utils.config import save_config
         save_config({
             "machines": {"remote": {"type": "ssh", "host": "user@server", "projects_dir": "/projects"}},
@@ -931,157 +1116,59 @@ class TestMachineActionItems:
         })
         from colette_cli.tui.screens import machine_action_items
         labels = _item_labels(machine_action_items("remote"))
-        assert "Sync colette" in labels
+        assert "Sync" in labels
 
-    def test_sync_colette_calls_sync_remote(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_local_projects, load_machine_cache
+    def test_sync_not_shown_for_local_machine(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        save_config(LOCAL_CFG)
+        from colette_cli.tui.screens import machine_action_items
+        labels = _item_labels(machine_action_items("local"))
+        assert "Sync" not in labels
+
+    def test_sync_calls_cmd_config_sync_with_machine_name(self, tmp_config):
+        from colette_cli.utils.config import save_config
         save_config({
-            "machines": {
-                "remote": {
-                    "type": "ssh",
-                    "host": "user@server",
-                    "projects_dir": "/projects",
-                    "colette_path": "/usr/local/bin/colette",
-                }
-            },
+            "machines": {"remote": {"type": "ssh", "host": "user@server", "projects_dir": "/projects"}},
             "default_machine": "remote",
         })
-        save_local_projects([])
-        report = {
-            "machine": {"projects_dir": "/home/user", "templates": []},
-            "projects": [
-                {"name": "proj-a", "machine": "local", "path": "/home/user/proj-a", "template": None},
-                {"name": "proj-b", "machine": "local", "path": "/home/user/proj-b", "template": None},
-            ],
-        }
         from colette_cli.tui.screens import machine_action_items
-        items = machine_action_items("remote")
-        sync_item = next(i for i in items if i.label == "Sync colette")
-        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True) as mock_sync, \
-             patch("colette_cli.utils.ssh.fetch_self_report", return_value=report) as mock_report, \
-             patch("colette_cli.tui.screens._async_popup", side_effect=lambda fn, lbl: fn) as mock_popup:
-            sync_item.run()
-        mock_popup.assert_called_once()
+        with patch("colette_cli.config.cmd_config_sync") as mock_sync, \
+             patch("threading.Thread", _SyncThread), \
+             patch("colette_cli.utils.notify.send_notification"), \
+             patch("colette_cli.tui.forms.show_running"):
+            items = machine_action_items("remote")
+            next(i for i in items if i.label == "Sync").run()
         mock_sync.assert_called_once()
-        call_args = mock_sync.call_args
-        assert call_args[0][0]["host"] == "user@server"
-        assert call_args[0][1] == "remote"
-        mock_report.assert_called_once()
-        cache = load_machine_cache("remote")
-        assert {p["name"] for p in cache["projects"]} == {"proj-a", "proj-b"}
+        assert mock_sync.call_args[0][0].machine_name == "remote"
 
-    def test_sync_colette_skips_local_machine(self, tmp_config):
-        # "Sync colette" must not appear in local machine items at all
-        from colette_cli.utils.config import save_config
-        save_config(LOCAL_CFG)
-        from colette_cli.tui.screens import machine_action_items
-        items = machine_action_items("local")
-        assert not any(i.label == "Sync colette" for i in items)
-
-    def test_sync_colette_warns_when_no_colette_path(self, tmp_config, capsys):
-        from colette_cli.utils.config import save_config
-        save_config({
-            "machines": {
-                "remote": {
-                    "type": "ssh",
-                    "host": "user@server",
-                    "projects_dir": "/projects",
-                }
-            },
-            "default_machine": "remote",
-        })
-        from colette_cli.tui.screens import machine_action_items
-        items = machine_action_items("remote")
-        sync_item = next(i for i in items if i.label == "Sync colette")
-        with patch("colette_cli.utils.ssh.sync_remote_colette") as mock_sync:
-            sync_item.run()
-        mock_sync.assert_not_called()
-        assert "colette_path" in capsys.readouterr().out
-    def test_sync_colette_raises_on_sync_failure(self, tmp_config):
-        """When sync_remote_colette returns None (scp error), _do_sync raises RuntimeError."""
-        from colette_cli.utils.config import save_config
-        save_config({
-            "machines": {
-                "remote": {
-                    "type": "ssh",
-                    "host": "user@server",
-                    "projects_dir": "/projects",
-                    "colette_path": "/usr/local/bin/colette",
-                }
-            },
-            "default_machine": "remote",
-        })
-        from colette_cli.tui.screens import machine_action_items
-        items = machine_action_items("remote")
-        sync_item = next(i for i in items if i.label == "Sync colette")
-        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=None), \
-             patch("colette_cli.tui.screens._async_popup", side_effect=lambda fn, lbl: fn):
-            with pytest.raises(RuntimeError, match="sync failed"):
-                sync_item.run()
-
-    def test_has_set_agent_and_ide_command_actions(self, tmp_config):
+    def test_has_rename_action(self, tmp_config):
         from colette_cli.utils.config import save_config
         save_config(LOCAL_CFG)
         from colette_cli.tui.screens import machine_action_items
         labels = _item_labels(machine_action_items("local"))
-        assert "Set agent command" in labels
-        assert "Set IDE command" in labels
+        assert "Rename" in labels
 
-    def test_set_agent_command_saves_to_config(self, tmp_config):
+    def test_rename_calls_cmd_config_rename_machine(self, tmp_config):
         from colette_cli.utils.config import save_config, load_config
         save_config(LOCAL_CFG)
         from colette_cli.tui.screens import machine_action_items
         items = machine_action_items("local")
-        set_agent = next(i for i in items if i.label == "Set agent command")
-        with patch("colette_cli.tui.forms.ask", return_value="claude --resume"):
-            set_agent.run()
+        rename = next(i for i in items if i.label == "Rename")
+        with patch("colette_cli.tui.forms.ask", return_value="renamed"):
+            rename.run()
         cfg = load_config()
-        assert cfg["machines"]["local"]["agent_command"] == "claude --resume"
+        assert "renamed" in cfg["machines"]
+        assert "local" not in cfg["machines"]
 
-    def test_set_agent_command_clears_on_empty(self, tmp_config):
-        from colette_cli.utils.config import save_config, load_config
-        cfg = dict(LOCAL_CFG["machines"]["local"])
-        cfg["agent_command"] = "old --agent"
-        save_config({"machines": {"local": cfg}, "default_machine": "local"})
-        from colette_cli.tui.screens import machine_action_items
-        items = machine_action_items("local")
-        set_agent = next(i for i in items if i.label == "Set agent command")
-        with patch("colette_cli.tui.forms.ask", return_value=""):
-            set_agent.run()
-        assert "agent_command" not in load_config()["machines"]["local"]
-
-    def test_set_agent_command_aborts_on_esc(self, tmp_config):
+    def test_rename_aborts_on_empty(self, tmp_config):
         from colette_cli.utils.config import save_config, load_config
         save_config(LOCAL_CFG)
         from colette_cli.tui.screens import machine_action_items
         items = machine_action_items("local")
-        set_agent = next(i for i in items if i.label == "Set agent command")
+        rename = next(i for i in items if i.label == "Rename")
         with patch("colette_cli.tui.forms.ask", return_value=None):
-            set_agent.run()
-        assert "agent_command" not in load_config()["machines"]["local"]
-
-    def test_set_ide_command_saves_to_config(self, tmp_config):
-        from colette_cli.utils.config import save_config, load_config
-        save_config(LOCAL_CFG)
-        from colette_cli.tui.screens import machine_action_items
-        items = machine_action_items("local")
-        set_ide = next(i for i in items if i.label == "Set IDE command")
-        with patch("colette_cli.tui.forms.ask", return_value="code-insiders"):
-            set_ide.run()
-        cfg = load_config()
-        assert cfg["machines"]["local"]["ide_command"] == "code-insiders"
-
-    def test_set_ide_command_clears_on_empty(self, tmp_config):
-        from colette_cli.utils.config import save_config, load_config
-        cfg = dict(LOCAL_CFG["machines"]["local"])
-        cfg["ide_command"] = "old-ide"
-        save_config({"machines": {"local": cfg}, "default_machine": "local"})
-        from colette_cli.tui.screens import machine_action_items
-        items = machine_action_items("local")
-        set_ide = next(i for i in items if i.label == "Set IDE command")
-        with patch("colette_cli.tui.forms.ask", return_value=""):
-            set_ide.run()
-        assert "ide_command" not in load_config()["machines"]["local"]
+            rename.run()
+        assert "local" in load_config()["machines"]
 
 
 # ---------------------------------------------------------------------------
@@ -1116,37 +1203,37 @@ class TestMachineTemplateItems:
         assert "my-tmpl" in labels
 
     def test_add_template_saves_to_machine(self, tmp_config):
-        from colette_cli.utils.config import save_config, load_config, save_templates
+        from colette_cli.utils.config import save_config, load_config
         from colette_cli.tui.screens import machine_template_items
         save_config(LOCAL_CFG)
-        save_templates({"templates": []})
         items = machine_template_items("local")
-        with patch("colette_cli.tui.forms.ask", side_effect=["newtmpl", "directory", "/tmpl/path", None]), \
-             patch("colette_cli.template.registry.scaffold_template_hook_files"):
+        with patch("colette_cli.tui.forms.form", return_value={
+            "name": "newtmpl", "type": "directory", "source": "/tmpl/path", "description": "",
+        }), patch("colette_cli.template.registry.scaffold_template_hook_files"):
             next(i for i in items if i.label == "Add template").run()
         cfg = load_config()
         tmpl_names = [t["name"] for t in cfg["machines"]["local"].get("templates", [])]
         assert "newtmpl" in tmpl_names
 
-    def test_add_template_aborts_on_empty_name(self, tmp_config):
+    def test_add_template_aborts_on_form_cancel(self, tmp_config):
         from colette_cli.utils.config import save_config, load_config
         from colette_cli.tui.screens import machine_template_items
         save_config(LOCAL_CFG)
         items = machine_template_items("local")
-        with patch("colette_cli.tui.forms.ask", return_value=None):
+        with patch("colette_cli.tui.forms.form", return_value=None):
             next(i for i in items if i.label == "Add template").run()
         cfg = load_config()
         assert not cfg["machines"]["local"].get("templates")
 
     def test_add_template_with_git_type_uses_url(self, tmp_config):
-        from colette_cli.utils.config import save_config, load_config, save_templates
+        from colette_cli.utils.config import save_config, load_config
         from colette_cli.tui.screens import machine_template_items
         save_config(LOCAL_CFG)
-        save_templates({"templates": []})
         items = machine_template_items("local")
-        with patch("colette_cli.tui.forms.ask",
-                   side_effect=["gittmpl", "git", "https://github.com/org/tmpl.git", None]), \
-             patch("colette_cli.template.registry.scaffold_template_hook_files"):
+        with patch("colette_cli.tui.forms.form", return_value={
+            "name": "gittmpl", "type": "git",
+            "source": "https://github.com/org/tmpl.git", "description": "",
+        }), patch("colette_cli.template.registry.scaffold_template_hook_files"):
             next(i for i in items if i.label == "Add template").run()
         cfg = load_config()
         tmpl = next(t for t in cfg["machines"]["local"]["templates"] if t["name"] == "gittmpl")
@@ -1154,24 +1241,47 @@ class TestMachineTemplateItems:
         assert tmpl["url"] == "https://github.com/org/tmpl.git"
         assert "path" not in tmpl
 
-    def test_add_template_aborts_if_already_exists(self, tmp_config):
-        from colette_cli.utils.config import save_config, load_config, save_templates
+    def test_add_template_name_validator_rejects_duplicate(self, tmp_config):
+        from colette_cli.utils.config import save_config
         from colette_cli.tui.screens import machine_template_items
         save_config(self.CFG_WITH_TMPL)
-        save_templates({"templates": [{"name": "my-tmpl"}]})
         items = machine_template_items("local")
-        with patch("colette_cli.tui.forms.ask", return_value="my-tmpl"), \
-             patch("colette_cli.template.registry.scaffold_template_hook_files"):
+        captured = {}
+
+        def _fake_form(fields, title=""):
+            captured["fields"] = fields
+            return None
+
+        with patch("colette_cli.tui.forms.form", side_effect=_fake_form):
             next(i for i in items if i.label == "Add template").run()
-        cfg = load_config()
-        # Still only one template — duplicate was rejected
-        assert len(cfg["machines"]["local"]["templates"]) == 1
+        name_field = next(f for f in captured["fields"] if f.name == "name")
+        ok, _ = name_field.validator("my-tmpl")
+        assert ok is False
+
+    def test_add_template_name_validator_rejects_existing_machine_name(self, tmp_config):
+        from colette_cli.utils.config import save_config
+        from colette_cli.tui.screens import machine_template_items
+        cfg = dict(self.CFG_WITH_TMPL)
+        cfg["machines"] = dict(cfg["machines"])
+        cfg["machines"]["other-machine"] = {"type": "local"}
+        save_config(cfg)
+        items = machine_template_items("local")
+        captured = {}
+
+        def _fake_form(fields, title=""):
+            captured["fields"] = fields
+            return None
+
+        with patch("colette_cli.tui.forms.form", side_effect=_fake_form):
+            next(i for i in items if i.label == "Add template").run()
+        name_field = next(f for f in captured["fields"] if f.name == "name")
+        ok, _ = name_field.validator("other-machine")
+        assert ok is False
 
     def test_remove_template_removes_from_machine(self, tmp_config):
-        from colette_cli.utils.config import save_config, load_config, save_templates
+        from colette_cli.utils.config import save_config, load_config
         from colette_cli.tui.screens import machine_template_items
         save_config(self.CFG_WITH_TMPL)
-        save_templates({"templates": []})
         items = machine_template_items("local")
         tmpl_item = next(i for i in items if i.label == "my-tmpl")
         children = tmpl_item.get_children()
@@ -1182,56 +1292,50 @@ class TestMachineTemplateItems:
         tmpl_names = [t["name"] for t in cfg["machines"]["local"].get("templates", [])]
         assert "my-tmpl" not in tmpl_names
 
-    def test_edit_template_updates_source(self, tmp_config):
-        from colette_cli.utils.config import save_config, load_config, save_templates
-        from colette_cli.tui.screens import machine_template_items
-        save_config(self.CFG_WITH_TMPL)
-        save_templates({"templates": [{"name": "my-tmpl"}]})
-        items = machine_template_items("local")
-        tmpl_item = next(i for i in items if i.label == "my-tmpl")
-        children = tmpl_item.get_children()
-        edit_item = next(i for i in children if i.label == "Edit")
-        with patch("colette_cli.tui.forms.ask", side_effect=["directory", "/new/path", ""]), \
-             patch("colette_cli.template.registry.scaffold_template_hook_files"):
-            edit_item.run()
-        cfg = load_config()
-        tmpl = next(t for t in cfg["machines"]["local"]["templates"] if t["name"] == "my-tmpl")
-        assert tmpl["path"] == "/new/path"
-
 
 # ---------------------------------------------------------------------------
-# TestConfigProjectListItems
+# machine_project_items
 # ---------------------------------------------------------------------------
 
-class TestConfigProjectListItems:
-    def test_lists_all_projects(self, tmp_config):
+class TestMachineProjectItems:
+    def test_lists_only_this_machines_projects(self, tmp_config):
         from colette_cli.utils.config import save_config, save_local_projects
-        from colette_cli.tui.screens import config_project_list_items
-        save_config(LOCAL_CFG)
-        save_local_projects([make_project("a"), make_project("b")])
-        labels = _item_labels(config_project_list_items())
+        from colette_cli.tui.screens import machine_project_items
+        cfg = {
+            "machines": {
+                "local": make_local_machine("/tmp"),
+                "other": make_local_machine("/other"),
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        save_local_projects([make_project("a", machine="local"), make_project("b", machine="other")])
+        labels = _item_labels(machine_project_items("local"))
         assert "a" in labels
-        assert "b" in labels
+        assert "b" not in labels
 
     def test_no_projects_placeholder(self, tmp_config):
-        from colette_cli.tui.screens import config_project_list_items
-        items = config_project_list_items()
+        from colette_cli.tui.screens import machine_project_items
+        items = machine_project_items("local")
         assert items[0].label == "(no projects)"
 
-    def test_project_items_are_submenus(self, tmp_config):
+    def test_project_items_are_full_action_submenus(self, tmp_config):
         from colette_cli.utils.config import save_config, save_local_projects
-        from colette_cli.tui.screens import config_project_list_items
+        from colette_cli.tui.screens import machine_project_items
         save_config(LOCAL_CFG)
         save_local_projects([make_project("proj")])
-        proj_item = next(i for i in config_project_list_items() if i.label == "proj")
+        proj_item = next(i for i in machine_project_items("local") if i.label == "proj")
         assert not proj_item.is_leaf
+        child_labels = _item_labels(proj_item.get_children())
+        assert "Delete" in child_labels
+        assert "Unlink" in child_labels
 
     def test_project_detail_shows_template(self, tmp_config):
         from colette_cli.utils.config import save_config, save_local_projects
-        from colette_cli.tui.screens import config_project_list_items
+        from colette_cli.tui.screens import machine_project_items
         save_config(LOCAL_CFG)
         save_local_projects([make_project("proj", template="my-tmpl")])
-        proj_item = next(i for i in config_project_list_items() if i.label == "proj")
+        proj_item = next(i for i in machine_project_items("local") if i.label == "proj")
         assert proj_item.detail == "my-tmpl"
 
 
@@ -1243,7 +1347,7 @@ class TestMainMenuItems:
     def test_has_all_top_level_entries(self, tmp_config):
         from colette_cli.tui.screens import main_menu_items
         labels = _item_labels(main_menu_items())
-        for label in ("Projects", "Templates", "Config", "Monitor"):
+        for label in ("Projects", "Machines", "Debug", "Monitor"):
             assert label in labels
 
     def test_monitor_is_submenu(self, tmp_config):
@@ -1257,12 +1361,20 @@ class TestMainMenuItems:
         sub_labels = _item_labels(monitor.get_children())
         assert sub_labels == ["Standard", "Agent", "All"]
 
-    def test_projects_templates_config_are_submenus(self, tmp_config):
+    def test_projects_machines_debug_are_submenus(self, tmp_config):
         from colette_cli.tui.screens import main_menu_items
         items = main_menu_items()
-        for label in ("Projects", "Templates", "Config"):
+        for label in ("Projects", "Machines", "Debug"):
             item = next(i for i in items if i.label == label)
             assert not item.is_leaf, f"{label} should be a submenu"
+
+    def test_no_templates_or_config_top_level_entries(self, tmp_config):
+        """Templates and Config were retired — Machines is now the single
+        home for machine-scoped things (§1 of the TUI redesign plan)."""
+        from colette_cli.tui.screens import main_menu_items
+        labels = _item_labels(main_menu_items())
+        assert "Templates" not in labels
+        assert "Config" not in labels
 
 
 # ---------------------------------------------------------------------------
@@ -1552,9 +1664,9 @@ class TestTemplateHookItemsMachineSpecific:
 
     def test_template_action_items_passes_machine_to_hooks(self, tmp_config):
         from colette_cli.utils.config import save_config
-        from colette_cli.tui.screens import template_action_items
+        from colette_cli.tui.screens import machine_template_action_items
         save_config(self.CFG)
-        items = template_action_items("dev", "remote")
+        items = machine_template_action_items("remote", "dev")
         edit_hooks = next(i for i in items if i.label == "Edit hooks")
         hook_items = edit_hooks.get_children()
         for hi in hook_items:
@@ -1562,9 +1674,9 @@ class TestTemplateHookItemsMachineSpecific:
 
     def test_template_action_items_passes_machine_to_params(self, tmp_config):
         from colette_cli.utils.config import save_config
-        from colette_cli.tui.screens import template_action_items
+        from colette_cli.tui.screens import machine_template_action_items
         save_config(self.CFG)
-        items = template_action_items("dev", "remote")
+        items = machine_template_action_items("remote", "dev")
         edit_params = next(i for i in items if i.label == "Edit parameters")
         # Just verify it resolves without error
         param_items = edit_params.get_children()
@@ -1598,10 +1710,9 @@ class TestTemplateParamItemsMachineSpecific:
 
     def test_does_not_show_shared_params(self, tmp_config):
         """Machine-specific view does not show shared template params."""
-        from colette_cli.utils.config import save_config, save_templates
+        from colette_cli.utils.config import save_config
         from colette_cli.tui.screens import template_param_items
         save_config(self.CFG)
-        save_templates({"templates": [{"name": "dev", "params": {"SHARED": "yes"}}]})
         items = template_param_items("dev", "remote")
         labels = [i.label for i in items]
         assert "SHARED" not in labels
@@ -1648,23 +1759,28 @@ class TestAddTemplateProjectNameConflict:
         "default_machine": "local",
     }
 
-    def test_add_template_aborts_if_name_is_existing_project(self, tmp_config):
-        from colette_cli.utils.config import save_config, save_local_projects, load_config
+    def test_add_template_name_validator_rejects_existing_project_name(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.tui.screens import machine_template_items
         save_config(self.CFG_WITH_PROJECT)
         save_local_projects([{"name": "existing-project", "machine": "local", "path": "/tmp/existing-project"}])
         items = machine_template_items("local")
-        with patch("colette_cli.tui.forms.ask", return_value="existing-project"), \
-             patch("colette_cli.template.registry.scaffold_template_hook_files"):
+        captured = {}
+
+        def _fake_form(fields, title=""):
+            captured["fields"] = fields
+            return None
+
+        with patch("colette_cli.tui.forms.form", side_effect=_fake_form):
             next(i for i in items if i.label == "Add template").run()
-        cfg = load_config()
-        assert not cfg["machines"]["local"].get("templates")
+        name_field = next(f for f in captured["fields"] if f.name == "name")
+        ok, _ = name_field.validator("existing-project")
+        assert ok is False
 
 
 class TestCreateProjectTemplateNameConflict:
-    def test_create_project_aborts_if_name_is_existing_template(self, tmp_config):
+    def test_create_project_name_validator_rejects_existing_template_name(self, tmp_config):
         from colette_cli.utils.config import save_config, save_local_projects
-        from colette_cli.project.commands import cmd_create
         cfg = {
             "machines": {
                 "local": {
@@ -1677,14 +1793,18 @@ class TestCreateProjectTemplateNameConflict:
         }
         save_config(cfg)
         save_local_projects([])
+        captured = {}
+
+        def _fake_form(fields, title=""):
+            captured["fields"] = fields
+            return None
+
         with patch("colette_cli.project.cmd_create") as mock_create, \
-             patch("colette_cli.tui.forms.ask", side_effect=["my-tmpl", "local", "my-tmpl"]):
+             patch("colette_cli.tui.forms.form", side_effect=_fake_form):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
             next(i for i in items if i.label == "Create project").run()
-        # cmd_create itself will error — mock means it won't, but the TUI
-        # aborts before calling it because the name matches a template
-        # The create is still dispatched via _async_popup, but we verify
-        # that the name guard in _create_project_interactive returns early.
-        # Since the guard runs before cmd_create is invoked, mock should NOT be called.
         mock_create.assert_not_called()
+        name_field = next(f for f in captured["fields"] if f.name == "name")
+        ok, _ = name_field.validator("my-tmpl")
+        assert ok is False

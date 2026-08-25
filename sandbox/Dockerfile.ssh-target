@@ -1,0 +1,19 @@
+FROM python:3.12-slim
+
+# openssh-server: this container's whole job is to be an SSH-reachable "remote machine".
+# tmux: same session/monitor/logs flows as the sandbox container, exercised remotely.
+# ncurses-term: harmless here (this container never runs the TUI itself), kept for parity.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openssh-server \
+        tmux \
+        ncurses-term \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd
+
+COPY sshd_config /etc/ssh/sshd_config
+
+ENV SANDBOX_ROLE=ssh-target
+
+WORKDIR /workspace
+
+ENTRYPOINT ["/workspace/sandbox/entrypoint.sh"]

@@ -1,6 +1,8 @@
 """Config package exports."""
 
 from .commands import (
+    apply_add_template,
+    apply_edit_template,
     cmd_config,
     cmd_config_add_machine,
     cmd_config_add_template,
@@ -12,13 +14,17 @@ from .commands import (
     cmd_config_list_templates,
     cmd_config_remove_machine,
     cmd_config_remove_template,
+    cmd_config_rename_machine,
     cmd_config_rename_template,
     cmd_config_run_template_update,
     cmd_config_set_default,
+    cmd_config_set_template_params,
     cmd_config_sync,
 )
 
 __all__ = [
+    "apply_add_template",
+    "apply_edit_template",
     "cmd_config",
     "cmd_config_add_machine",
     "cmd_config_add_template",
@@ -30,8 +36,10 @@ __all__ = [
     "cmd_config_list_templates",
     "cmd_config_remove_machine",
     "cmd_config_remove_template",
+    "cmd_config_rename_machine",
     "cmd_config_rename_template",
     "cmd_config_run_template_update",
     "cmd_config_set_default",
+    "cmd_config_set_template_params",
     "cmd_config_sync",
 ]

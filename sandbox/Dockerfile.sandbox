@@ -1,0 +1,24 @@
+FROM python:3.12-slim
+
+# ncurses-term: terminfo for TERM=xterm-256color (curses.wrapper needs this,
+#   the compiled-in _curses module isn't enough on its own).
+# tmux: colette_cli/utils/tmux.py shells out to it for every session/monitor/logs flow.
+# openssh-client: colette_cli/utils/ssh.py shells out to raw ssh/scp for the ssh-target machine.
+# git + ca-certificates: only needed for a "git"-type template, not the baseline seed, but cheap to have.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ncurses-term \
+        tmux \
+        openssh-client \
+        git \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV SANDBOX_ROLE=sandbox
+ENV PATH="/root/.local/bin:${PATH}"
+ENV TERM=xterm-256color
+
+WORKDIR /workspace
+
+# entrypoint.sh lives on the bind-mounted repo (sandbox/entrypoint.sh), not
+# baked into the image, so editing it never requires an image rebuild.
+ENTRYPOINT ["/workspace/sandbox/entrypoint.sh"]

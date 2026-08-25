@@ -1,0 +1,45 @@
+services:
+  sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    container_name: colette-sandbox
+    hostname: sandbox
+    tty: true
+    stdin_open: true
+    volumes:
+      # Repo source, read-write — iterate on colette_cli/* without an image
+      # rebuild; ./scripts/build.sh + install.sh run from inside the container.
+      - ..:/workspace:rw
+      # This container's own fake $HOME, isolated from the real host's
+      # ~/.config/colette and ~/colette-projects.
+      - ./state/sandbox-home:/root
+      # ssh-target's fake $HOME, bind-mounted here too so provision_ssh.py can
+      # write its authorized_keys directly without an SSH round-trip.
+      - ./state/ssh-target-home:/ssh-target-home
+    networks:
+      - colette-sandbox-net
+    depends_on:
+      - ssh-target
+    # No ports published — reach it only via `docker compose exec`.
+
+  ssh-target:
+    build:
+      context: .
+      dockerfile: Dockerfile.ssh-target
+    container_name: colette-ssh-target
+    hostname: ssh-target
+    volumes:
+      - ..:/workspace:ro
+      - ./state/ssh-target-home:/root
+    networks:
+      - colette-sandbox-net
+    # No ports published — only reachable from the `sandbox` container, over
+    # the dedicated network below, never from the host or the internet.
+
+networks:
+  colette-sandbox-net:
+    name: colette-sandbox-net
+    # Deliberately its own network, distinct from the host's real `proxy`
+    # network (used by Traefik + the live production stacks) — never touch
+    # that network from here.
