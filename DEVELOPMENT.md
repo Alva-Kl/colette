@@ -108,10 +108,19 @@ as it exists on a single machine.
 
 Machine entries come in two shapes: the machine's own definition(s)
 (`type: "local"`, full data), and connection stubs for known remote
-machines (`type: "ssh"`, connection info only — no `projects_dir`/
-`templates`, since that's the remote's own business, reachable only via the
-read-only cache described below). A connection stub *can* still carry its
-own `templates` list (the older push model: author hook scripts locally via
+machines (`type: "ssh"`, mostly connection info — the remote's actual
+project/template data is the remote's own business, reachable only via the
+read-only cache described below). A connection stub *is* still prompted for
+and stores its own `projects_dir` (the value the user enters when running
+`add-machine`/`edit-machine`) — this is purely the controller's own record
+of what it believes that connection's projects directory to be; the
+controller never reads or writes anything there directly. `fetch_self_report`
+(`utils/ssh.py`) passes it to the remote's `colette debug self-report` call
+so the remote can disambiguate itself when it hosts more than one logical
+`type: "local"` machine — see `cmd_debug_self_report`'s docstring
+(`debug/commands.py`) and the "Decentralized remote-machine model" section
+below. A connection stub *can* also still carry its own `templates` list
+(the older push model: author hook scripts locally via
 `add-template`/`edit-hook`, which get pushed to the remote — see "Hook
 resolution and pushing to remotes" below); the two sources are merged by
 `list_creatable_templates`/`list_creatable_template_names`/
@@ -144,6 +153,7 @@ locally owned.
       "host": "user@192.168.1.10",
       "ssh_key": "/home/user/.ssh/id_ed25519",
       "colette_path": "/home/user/.local/bin/colette",
+      "projects_dir": "/home/user/projects",
       "agent_command": "claude",
       "ide_command": "code --folder-uri vscode-remote://ssh-remote+{host}{path}"
     }
@@ -213,15 +223,36 @@ overwritten wholesale by the next sync.
 }
 ```
 
-`projects` here is the remote's own `projects.json` verbatim (so each
-entry's `machine` field is the *remote's* self-name, typically `"local"` —
-not the controller's connection name for it, e.g. `"server"`). The merged
-read view in `load_projects()` (`utils/config.py`) remaps this to the
-controller's connection name and tags each entry `_cached: True` before
-handing it to callers — see "Decentralized remote-machine model" below.
-`templates` here is metadata only (name/type/path-or-url/description/
-params) — hook script *bodies* are never cached; they're always fetched
-fresh over SSH at execution time (see the hook system section below).
+`projects` here is the remote's own `projects.json`, filtered to the entries
+belonging to the specific local machine being reported on (so each entry's
+`machine` field is the *remote's* self-name, typically `"local"` — not the
+controller's connection name for it, e.g. `"server"`). The merged read view
+in `load_projects()` (`utils/config.py`) remaps this to the controller's
+connection name and tags each entry `_cached: True` before handing it to
+callers — see "Decentralized remote-machine model" below. `templates` here
+is metadata only (name/type/path-or-url/description/params) — hook script
+*bodies* are never cached; they're always fetched fresh over SSH at
+execution time (see the hook system section below).
+
+A single physical host can run more than one logical `type: "local"`
+machine out of one shared `~/.config/colette/` (e.g. separate prod/dev
+workspaces on the same server, distinguished only by each project's own
+`machine` field in that host's one `projects.json`). `cmd_debug_self_report`
+(`debug/commands.py`) disambiguates this using each connection's own
+`projects_dir`, not its name: `fetch_self_report` (`utils/ssh.py`) passes
+the calling machine stub's configured `projects_dir` as an argument to the
+remote `colette debug self-report` call, and if that value (`~`-expanded)
+matches one of the remote's own `type: "local"` entries' own `projects_dir`
+(also `~`-expanded, both against *this* machine's home since the comparison
+runs on the remote), that entry is used as-is (`projects` filtered to
+`p["machine"] == that entry's name`). This only requires each connection
+stub's `projects_dir` to be set to that logical machine's real projects
+directory — nothing about the controller's own name for the connection
+matters. If it doesn't match (empty/unset `projects_dir`, or the remote has
+only one local machine, the common case), self-report falls back to its
+original heuristic (the entry matching the remote's own `default_machine`,
+else the first `type: "local"` entry) and reports all of that host's
+projects.
 
 ### Hook file directories
 

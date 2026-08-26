@@ -83,7 +83,7 @@ class TestCmdDebugSelfReport:
             "default_machine": "local",
         })
         save_local_projects([{"name": "p", "machine": "local", "path": "/home/user/projects/p", "template": None}])
-        cmd_debug_self_report(MagicMock())
+        cmd_debug_self_report(MagicMock(projects_dir=None))
         report = json.loads(capsys.readouterr().out)
         assert report["machine"]["projects_dir"] == "/home/user/projects"
         assert report["projects"][0]["name"] == "p"
@@ -99,7 +99,7 @@ class TestCmdDebugSelfReport:
             },
             "default_machine": "remote-stub",
         })
-        cmd_debug_self_report(MagicMock())
+        cmd_debug_self_report(MagicMock(projects_dir=None))
         report = json.loads(capsys.readouterr().out)
         assert report["machine"]["projects_dir"] == "/home/user/projects"
 
@@ -111,7 +111,7 @@ class TestCmdDebugSelfReport:
             "machines": {"local": {"type": "local", "projects_dir": "/p", "templates": []}},
             "default_machine": None,
         })
-        cmd_debug_self_report(MagicMock())
+        cmd_debug_self_report(MagicMock(projects_dir=None))
         report = json.loads(capsys.readouterr().out)
         assert report["machine"]["projects_dir"] == "/p"
 
@@ -123,7 +123,87 @@ class TestCmdDebugSelfReport:
             "default_machine": "remote",
         })
         with pytest.raises(SystemExit):
-            cmd_debug_self_report(MagicMock())
+            cmd_debug_self_report(MagicMock(projects_dir=None))
+
+    def test_multiple_local_machines_share_one_projects_file(self, tmp_config, capsys):
+        """A host running two logical 'local' machines (e.g. prod/dev
+        workspaces) out of one ~/.config/colette shares a single
+        projects.json — self-report must use the requested projects_dir to
+        report only that machine's own projects_dir/templates and filter
+        projects down to that machine's own entries."""
+        import json
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.debug.commands import cmd_debug_self_report
+        save_config({
+            "machines": {
+                "alvakl": {"type": "local", "projects_dir": "/prod", "templates": [{"name": "prod-tmpl"}]},
+                "dev": {"type": "local", "projects_dir": "/dev", "templates": [{"name": "dev-tmpl"}]},
+            },
+            "default_machine": "alvakl",
+        })
+        save_local_projects([
+            {"name": "a", "machine": "alvakl", "path": "/prod/a", "template": "prod-tmpl"},
+            {"name": "b", "machine": "dev", "path": "/dev/b", "template": "dev-tmpl"},
+        ])
+
+        cmd_debug_self_report(MagicMock(projects_dir="/dev"))
+        report = json.loads(capsys.readouterr().out)
+        assert report["machine"]["projects_dir"] == "/dev"
+        assert [p["name"] for p in report["projects"]] == ["b"]
+
+        cmd_debug_self_report(MagicMock(projects_dir="/prod"))
+        report = json.loads(capsys.readouterr().out)
+        assert report["machine"]["projects_dir"] == "/prod"
+        assert [p["name"] for p in report["projects"]] == ["a"]
+
+    def test_projects_dir_matching_expands_tilde_on_both_sides(self, tmp_config, capsys):
+        """The caller's projects_dir and the remote's own stored value may be
+        written as '~/...' or the absolute equivalent interchangeably —
+        both are expanded against this machine's own home before comparing."""
+        import json
+        import os
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.debug.commands import cmd_debug_self_report
+        home = os.path.expanduser("~")
+        save_config({
+            "machines": {
+                "alvakl": {"type": "local", "projects_dir": "~/colette-projects", "templates": []},
+                "dev": {"type": "local", "projects_dir": f"{home}/colette-projects-dev", "templates": []},
+            },
+            "default_machine": "alvakl",
+        })
+        save_local_projects([
+            {"name": "a", "machine": "alvakl", "path": "x", "template": None},
+            {"name": "b", "machine": "dev", "path": "y", "template": None},
+        ])
+
+        # Absolute path matches a '~'-stored remote entry.
+        cmd_debug_self_report(MagicMock(projects_dir=f"{home}/colette-projects"))
+        report = json.loads(capsys.readouterr().out)
+        assert [p["name"] for p in report["projects"]] == ["a"]
+
+        # '~'-relative path matches an absolute remote entry.
+        cmd_debug_self_report(MagicMock(projects_dir="~/colette-projects-dev"))
+        report = json.loads(capsys.readouterr().out)
+        assert [p["name"] for p in report["projects"]] == ["b"]
+
+    def test_unmatched_projects_dir_falls_back_to_default_heuristic(self, tmp_config, capsys):
+        """A controller's projects_dir that doesn't match any local entry
+        here (e.g. left blank, or a normal single-local-machine host) must
+        not break self-identification — falls back to the default/first-local
+        heuristic, same as today."""
+        import json
+        from colette_cli.utils.config import save_config, save_local_projects
+        from colette_cli.debug.commands import cmd_debug_self_report
+        save_config({
+            "machines": {"local": {"type": "local", "projects_dir": "/home/user/projects", "templates": []}},
+            "default_machine": "local",
+        })
+        save_local_projects([{"name": "p", "machine": "local", "path": "/home/user/projects/p", "template": None}])
+        cmd_debug_self_report(MagicMock(projects_dir=""))
+        report = json.loads(capsys.readouterr().out)
+        assert report["machine"]["projects_dir"] == "/home/user/projects"
+        assert report["projects"][0]["name"] == "p"
 
 
 class TestCmdDebugDispatch:
@@ -146,6 +226,7 @@ class TestCmdDebugDispatch:
         })
         args = MagicMock()
         args.debug_cmd = "self-report"
+        args.projects_dir = None
         cmd_debug(args)
         report = json.loads(capsys.readouterr().out)
         assert report["machine"]["projects_dir"] == "/p"

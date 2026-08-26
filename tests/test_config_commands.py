@@ -832,8 +832,36 @@ class TestCmdConfigSync:
         args = MagicMock(machine_name=None)
         with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True), \
              patch("colette_cli.utils.ssh.fetch_self_report", return_value=None):
-            cmd_config_sync(args)
+            with pytest.raises(SystemExit):
+                cmd_config_sync(args)
         assert load_machine_cache("myremote") is None
+        assert "failed to fetch project/template data" in capsys.readouterr().err
+
+    def test_exits_after_processing_all_machines_when_one_fails(self, tmp_config):
+        """A failed pull on one machine shouldn't stop other machines from
+        being synced and cached first — the overall failure is reported last."""
+        from colette_cli.utils.config import save_config, load_machine_cache
+        from colette_cli.config.commands import cmd_config_sync
+
+        cfg = {
+            "machines": {
+                "good": {"type": "ssh", "host": "user@good", "colette_path": "/bin/colette"},
+                "bad": {"type": "ssh", "host": "user@bad", "colette_path": "/bin/colette"},
+            }
+        }
+        save_config(cfg)
+        args = MagicMock(machine_name=None)
+
+        def fake_fetch(machine, name):
+            return self._REPORT if name == "good" else None
+
+        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True), \
+             patch("colette_cli.utils.ssh.fetch_self_report", side_effect=fake_fetch):
+            with pytest.raises(SystemExit):
+                cmd_config_sync(args)
+
+        assert load_machine_cache("good")["projects"] == self._REPORT["projects"]
+        assert load_machine_cache("bad") is None
 
 
 class TestCmdConfigAddTemplate:

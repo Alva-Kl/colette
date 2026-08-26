@@ -262,6 +262,10 @@ colette config sync            # all remote machines
 colette config sync my-server  # one machine
 ```
 
+If the project/template pull fails for any machine (e.g. it's unreachable),
+the cache for that machine is left untouched (never wiped) and `sync` exits
+non-zero after finishing every other machine, reporting which one(s) failed.
+
 This is a one-way **pull** — colette never pushes your local projects or
 templates to a remote machine's registry. Projects/templates created on a
 remote (directly there, or via `colette create -m my-server`/`colette config

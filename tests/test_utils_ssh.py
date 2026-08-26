@@ -617,6 +617,47 @@ class TestSshRun:
         assert cmd == ["ssh", "-o", "BatchMode=yes", "user@host", "echo hi"]
 
 
+class TestFetchSelfReport:
+    def test_passes_projects_dir_to_remote_command(self):
+        from colette_cli.utils.ssh import fetch_self_report
+        machine = {
+            "type": "ssh", "host": "user@host", "colette_path": "/bin/colette",
+            "projects_dir": "/root/colette-projects-dev",
+        }
+        ok = MagicMock(returncode=0, stdout='{"machine": {}, "projects": []}')
+        with patch("subprocess.run", return_value=ok) as mock_run:
+            fetch_self_report(machine, "dev")
+        cmd = mock_run.call_args.args[0]
+        assert cmd[-1] == "/bin/colette debug self-report /root/colette-projects-dev"
+
+    def test_passes_empty_string_when_no_projects_dir_configured(self):
+        from colette_cli.utils.ssh import fetch_self_report
+        machine = {"type": "ssh", "host": "user@host", "colette_path": "/bin/colette"}
+        ok = MagicMock(returncode=0, stdout='{"machine": {}, "projects": []}')
+        with patch("subprocess.run", return_value=ok) as mock_run:
+            fetch_self_report(machine, "dev")
+        cmd = mock_run.call_args.args[0]
+        assert cmd[-1] == "/bin/colette debug self-report ''"
+
+    def test_returns_none_when_no_colette_path(self):
+        from colette_cli.utils.ssh import fetch_self_report
+        assert fetch_self_report({"type": "ssh", "host": "user@host"}, "dev") is None
+
+    def test_returns_none_on_nonzero_exit(self):
+        from colette_cli.utils.ssh import fetch_self_report
+        machine = {"type": "ssh", "host": "user@host", "colette_path": "/bin/colette"}
+        bad = MagicMock(returncode=1, stdout="")
+        with patch("subprocess.run", return_value=bad):
+            assert fetch_self_report(machine, "dev") is None
+
+    def test_returns_none_on_malformed_json(self):
+        from colette_cli.utils.ssh import fetch_self_report
+        machine = {"type": "ssh", "host": "user@host", "colette_path": "/bin/colette"}
+        bad = MagicMock(returncode=0, stdout="not json")
+        with patch("subprocess.run", return_value=bad):
+            assert fetch_self_report(machine, "dev") is None
+
+
 class TestSshInteractive:
     def test_builds_command_with_tty_flag(self, monkeypatch):
         from colette_cli.utils.ssh import ssh_interactive

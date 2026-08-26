@@ -335,14 +335,27 @@ def ssh_read_hook_files(machine, project_name, template_name):
 def fetch_self_report(machine, machine_name):
     """Run `colette debug self-report` on a remote machine over SSH and parse its JSON output.
 
+    Passes this connection's own configured `projects_dir` through so the
+    remote can disambiguate when it hosts more than one logical `type:
+    "local"` machine out of one shared config dir (e.g. separate prod/dev
+    workspaces on one server, each with its own projects directory) — see
+    `cmd_debug_self_report`'s docstring. Harmless when the remote has only
+    one local machine, when this connection has no `projects_dir` set, or
+    when it doesn't match any of the remote's local entries (the remote
+    falls back to its default heuristic either way). *machine_name* is only
+    used for warning/status messages, not sent to the remote.
+
     Returns the parsed dict, or None on any failure (no colette_path
     configured, SSH error, non-zero exit, or malformed JSON).
     """
     remote_path = machine.get("colette_path")
     if not remote_path:
         return None
+    projects_dir = machine.get("projects_dir", "")
     result = ssh_run(
-        machine, f"{shlex.quote(remote_path)} debug self-report", extra_opts=_SYNC_SSH_OPTS
+        machine,
+        f"{shlex.quote(remote_path)} debug self-report {shlex.quote(projects_dir)}",
+        extra_opts=_SYNC_SSH_OPTS,
     )
     if result.returncode != 0:
         return None

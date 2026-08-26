@@ -351,6 +351,13 @@ def build_parser():
 
     # Internal — invoked by `colette config sync` over SSH, not meant for
     # interactive use (dumps this machine's own projects/templates as JSON).
-    dbgsub.add_parser("self-report", help="(internal) dump this machine's own projects/templates as JSON")
+    srp = dbgsub.add_parser("self-report", help="(internal) dump this machine's own projects/templates as JSON")
+    srp.add_argument(
+        "projects_dir",
+        nargs="?",
+        default=None,
+        help="(internal) the caller's configured projects_dir for this machine, used to "
+        "disambiguate when this host has more than one 'local' machine entry",
+    )
 
     return parser, sub.choices

@@ -684,6 +684,7 @@ def cmd_config_sync(args):
         print("No remote machines configured.")
         return
 
+    failed = []
     for name, machine in targets.items():
         if not machine.get("colette_path"):
             print(f"  {name}: no colette_path set, skipping.")
@@ -697,6 +698,7 @@ def cmd_config_sync(args):
         report = fetch_self_report(machine, name)
         if report is None:
             warn(f"failed to fetch project/template data from '{name}'.")
+            failed.append(name)
             continue
 
         cache_data = {
@@ -711,6 +713,9 @@ def cmd_config_sync(args):
             f"Cached {len(cache_data['projects'])} project(s) and "
             f"{len(cache_data['templates'])} template(s) from '{name}'."
         )
+
+    if failed:
+        err(f"failed to fetch project/template data from: {', '.join(failed)}.")
 
 
 def cmd_config(args):
