@@ -259,7 +259,7 @@ def _add_machine_interactive():
             visible_if=lambda v: v["type"] == "ssh",
         ),
         FormField(
-            name="colette_path", label="Path to colette binary (empty = skip auto-sync)",
+            name="colette_path", label="Path to colette binary (empty = skip 'config sync')",
             visible_if=lambda v: v["type"] == "ssh",
         ),
         FormField(
@@ -355,7 +355,7 @@ def _edit_machine_interactive(machine_name):
             default=machine.get("ssh_key", ""), visible_if=lambda v: v["type"] == "ssh",
         ),
         FormField(
-            name="colette_path", label="Path to colette binary (empty = skip auto-sync)",
+            name="colette_path", label="Path to colette binary (empty = skip 'config sync')",
             default=machine.get("colette_path", ""), visible_if=lambda v: v["type"] == "ssh",
         ),
         FormField(

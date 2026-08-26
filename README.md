@@ -117,7 +117,7 @@ Without an action, prints a summary of the current configuration.
 | `set-default <machine>` | Set the default machine |
 | `rename-template <machine> <old> <new>` | Rename a template on a machine |
 | `rename-machine <old> <new>` | Rename a machine |
-| `sync [machine]` | Sync the colette binary and pull a read-only project/template cache from remote machine(s) |
+| `sync [machine]` | Pull a read-only project/template cache from remote machine(s) |
 
 #### `colette config list`
 
@@ -250,12 +250,13 @@ colette config rename-machine old-name new-name
 
 #### `colette config sync [machine]`
 
-Sync one or all remote machines: first copies the local colette binary to the
-path configured in `colette_path` if it's out of date (requires `colette_path`
-to be set — see `colette config edit-machine`), then **pulls** that machine's
-own project/template data over SSH (running a hidden `colette debug
-self-report` on the remote) and caches it locally in
-`~/.config/colette/cache/<machine>.json`.
+**Pulls** one or all remote machines' own project/template data over SSH
+(running a hidden `colette debug self-report` on the remote, via the
+`colette` binary at its configured `colette_path` — see `colette config
+edit-machine`) and caches it locally in
+`~/.config/colette/cache/<machine>.json`. This does not touch the remote
+`colette` binary itself — keeping it updated on each machine is your own
+responsibility.
 
 ```bash
 colette config sync            # all remote machines

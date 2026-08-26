@@ -751,28 +751,6 @@ class TestCmdConfigSync:
         "projects": [{"name": "proj-a", "machine": "local", "path": "/home/user/projects/proj-a", "template": None}],
     }
 
-    def test_prints_synced_on_success(self, tmp_config, capsys):
-        from colette_cli.utils.config import save_config
-        from colette_cli.config.commands import cmd_config_sync
-        save_config(self._REMOTE_CFG)
-        args = MagicMock(machine_name=None)
-        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True), \
-             patch("colette_cli.utils.ssh.fetch_self_report", return_value=self._REPORT):
-            cmd_config_sync(args)
-        out = capsys.readouterr().out
-        assert "synced" in out and "myremote" in out
-
-    def test_prints_up_to_date_when_not_synced(self, tmp_config, capsys):
-        from colette_cli.utils.config import save_config
-        from colette_cli.config.commands import cmd_config_sync
-        save_config(self._REMOTE_CFG)
-        args = MagicMock(machine_name=None)
-        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=False), \
-             patch("colette_cli.utils.ssh.fetch_self_report", return_value=self._REPORT):
-            cmd_config_sync(args)
-        out = capsys.readouterr().out
-        assert "up to date" in out
-
     def test_skips_machine_with_no_colette_path(self, tmp_config, capsys):
         from colette_cli.utils.config import save_config
         from colette_cli.config.commands import cmd_config_sync
@@ -786,9 +764,9 @@ class TestCmdConfigSync:
         }
         save_config(cfg)
         args = MagicMock(machine_name=None)
-        with patch("colette_cli.utils.ssh.sync_remote_colette") as mock_sync:
+        with patch("colette_cli.utils.ssh.fetch_self_report") as mock_report:
             cmd_config_sync(args)
-        mock_sync.assert_not_called()
+        mock_report.assert_not_called()
         assert "no colette_path set" in capsys.readouterr().out
 
     def test_exits_when_named_machine_not_found(self, tmp_config):
@@ -814,8 +792,7 @@ class TestCmdConfigSync:
         from colette_cli.config.commands import cmd_config_sync
         save_config(self._REMOTE_CFG)
         args = MagicMock(machine_name=None)
-        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True), \
-             patch("colette_cli.utils.ssh.fetch_self_report", return_value=self._REPORT) as mock_report:
+        with patch("colette_cli.utils.ssh.fetch_self_report", return_value=self._REPORT) as mock_report:
             cmd_config_sync(args)
 
         mock_report.assert_called_once()
@@ -830,8 +807,7 @@ class TestCmdConfigSync:
         from colette_cli.config.commands import cmd_config_sync
         save_config(self._REMOTE_CFG)
         args = MagicMock(machine_name=None)
-        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True), \
-             patch("colette_cli.utils.ssh.fetch_self_report", return_value=None):
+        with patch("colette_cli.utils.ssh.fetch_self_report", return_value=None):
             with pytest.raises(SystemExit):
                 cmd_config_sync(args)
         assert load_machine_cache("myremote") is None
@@ -855,8 +831,7 @@ class TestCmdConfigSync:
         def fake_fetch(machine, name):
             return self._REPORT if name == "good" else None
 
-        with patch("colette_cli.utils.ssh.sync_remote_colette", return_value=True), \
-             patch("colette_cli.utils.ssh.fetch_self_report", side_effect=fake_fetch):
+        with patch("colette_cli.utils.ssh.fetch_self_report", side_effect=fake_fetch):
             with pytest.raises(SystemExit):
                 cmd_config_sync(args)
 

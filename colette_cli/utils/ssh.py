@@ -4,45 +4,11 @@ import json
 import os
 import shlex
 import subprocess
-import threading
-from pathlib import Path
 
-from colette_cli import __version__ as _local_version
-from colette_cli.utils.notify import send_notification
-
-def _find_local_bin() -> Path:
-    """Resolve the local colette binary path.
-
-    When running as a zipapp (e.g. build/beta/colette), Python sets __file__
-    to a virtual path inside the zip archive, so navigating parent.parent.parent
-    lands on the zip file itself rather than the repo root. Detect this by
-    walking up __file__'s parents until we find one that is an actual file on
-    disk (the zipapp boundary), then step past it to reach the repo root.
-    Falls back to __file__-relative navigation for dev / editable installs.
-    """
-    src = Path(__file__).resolve()
-    zipapp = next((p for p in src.parents if p.is_file()), None)
-    if zipapp is not None:
-        repo_root = zipapp.parent.parent.parent
-    else:
-        repo_root = src.parent.parent.parent
-    return repo_root / "build" / "prod" / "colette"
-
-
-_LOCAL_BIN = _find_local_bin()
-_thread_local = threading.local()
-
-# Extra SSH options used only for non-interactive sync calls:
+# Extra SSH options used only for non-interactive automated calls:
 # - BatchMode=yes  — fail immediately instead of prompting for passwords
 # - ConnectTimeout — prevent background threads from hanging on unreachable hosts
 _SYNC_SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=30"]
-
-
-def _synced_machines() -> set:
-    """Return the per-thread set of already-synced machine keys."""
-    if not hasattr(_thread_local, "synced_machines"):
-        _thread_local.synced_machines = set()
-    return _thread_local.synced_machines
 
 
 def _ssh_base_args(machine):
@@ -53,16 +19,6 @@ def _ssh_base_args(machine):
     if "port" in machine:
         args += ["-p", str(machine["port"])]
     args.append(machine["host"])
-    return args
-
-
-def _scp_args(machine):
-    """Build base SCP arguments from machine config. Note: scp uses -P for port."""
-    args = ["scp"]
-    if "ssh_key" in machine:
-        args += ["-i", machine["ssh_key"]]
-    if "port" in machine:
-        args += ["-P", str(machine["port"])]
     return args
 
 
@@ -363,88 +319,3 @@ def fetch_self_report(machine, machine_name):
         return json.loads(result.stdout)
     except json.JSONDecodeError:
         return None
-
-
-def sync_remote_colette(machine, machine_name):
-    """Sync the local colette binary to a remote machine.
-
-    Compares the remote version (via `<colette_path> --version`) against
-    _local_version. Syncs the binary via scp if they differ, creates the remote
-    path if it does not exist. Fires a system notification for install/update
-    events. Uses a per-thread cache to avoid redundant SSH round-trips within
-    a single invocation (thread-local so TUI async operations are independent).
-    Does nothing if machine has no 'colette_path' key.
-
-    Returns:
-        True  — binary was synced successfully
-        False — already up to date or already processed this thread's invocation
-        None  — error occurred (warning already emitted)
-    """
-    from colette_cli.utils.formatting import info, warn
-
-    remote_path = machine.get("colette_path")
-    if not remote_path:
-        return False
-
-    machine_key = machine.get("name") or machine.get("host", "")
-    synced = _synced_machines()
-    if machine_key in synced:
-        return False
-
-    if not _LOCAL_BIN.is_file():
-        warn(f"binary sync skipped for '{machine_name}': local build not found at {_LOCAL_BIN}")
-        send_notification("colette", f"Sync skipped for '{machine_name}': local build not found")
-        synced.add(machine_key)
-        return None
-
-    info(f"Syncing colette to '{machine_name}'…")
-    version_result = ssh_run(
-        machine,
-        f"{shlex.quote(remote_path)} --version 2>/dev/null || true",
-        extra_opts=_SYNC_SSH_OPTS,
-    )
-    remote_output = (version_result.stdout or "").strip()
-
-    remote_version = None
-    if remote_output:
-        parts = remote_output.split()
-        if len(parts) >= 2:
-            remote_version = parts[-1]
-
-    need_sync = remote_version != _local_version
-    was_absent = remote_version is None
-
-    if need_sync:
-        remote_dir = shlex.quote(str(Path(remote_path).parent))
-        ssh_run(machine, f"mkdir -p {remote_dir}", extra_opts=_SYNC_SSH_OPTS)
-
-        dest = f"{machine['host']}:{remote_path}"
-        cp_result = subprocess.run(
-            _scp_args(machine) + _SYNC_SSH_OPTS + [str(_LOCAL_BIN), dest],
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-        )
-        if cp_result.returncode != 0:
-            details = cp_result.stderr.strip() or f"exit {cp_result.returncode}"
-            warn(f"failed to copy colette to '{machine_name}': {details}")
-            send_notification("colette", f"Failed to sync binary to '{machine_name}'")
-            return None
-
-        chmod_result = ssh_run(
-            machine,
-            f"chmod +x {shlex.quote(remote_path)}",
-            extra_opts=_SYNC_SSH_OPTS,
-        )
-        if chmod_result.returncode != 0:
-            warn(f"copied colette to '{machine_name}' but chmod +x failed (exit {chmod_result.returncode})")
-
-        if was_absent:
-            info(f"Installed colette on '{machine_name}' at {remote_path}")
-            send_notification("colette", f"Installed colette on '{machine_name}'")
-        else:
-            info(f"Updated colette on '{machine_name}' to {_local_version}")
-            send_notification("colette", f"Updated colette on '{machine_name}'")
-
-    synced.add(machine_key)
-    return need_sync

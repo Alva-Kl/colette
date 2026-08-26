@@ -20,7 +20,7 @@ from colette_cli.utils.config import (
 )
 from colette_cli.utils.formatting import bold, cyan, dim, err, info
 from colette_cli.utils.helpers import build_projects_by_machine, is_remote_machine, iter_machine_projects
-from colette_cli.utils.ssh import ssh_interactive, ssh_run, ssh_flags_str, sync_remote_colette
+from colette_cli.utils.ssh import ssh_interactive, ssh_run, ssh_flags_str
 from colette_cli.utils.tmux import (
     create_tmux_window_with_panes,
     create_tmux_window_with_rows,
@@ -56,9 +56,6 @@ def cmd_start(args):
         err(f"no projects found for machine '{filter_machine}'.")
 
     for machine_name, machine_projects, machine, is_remote in iter_machine_projects(projects, cfg, filter_machine, filter_names):
-        if is_remote:
-            sync_remote_colette(machine, machine_name)
-
         print(f"\n{bold(f'[{machine_name}]')}")
 
         for project in sorted(machine_projects, key=lambda x: x["name"]):
@@ -149,9 +146,6 @@ def cmd_update(args):
 
     cfg = load_config()
     for machine_name, machine_projects, machine, is_remote in iter_machine_projects(projects, cfg, filter_machine, filter_names):
-        if is_remote:
-            sync_remote_colette(machine, machine_name)
-
         print(f"\n{bold(f'[{machine_name}]')}")
 
         for project in sorted(machine_projects, key=lambda x: x["name"]):

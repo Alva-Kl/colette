@@ -119,12 +119,14 @@ def build_parser():
     sdp.add_argument("machine_name", help="Machine name")
     srp = csub.add_parser(
         "sync",
-        help="Sync the local colette binary and pull a read-only project/template cache from a remote machine",
+        help="Pull a read-only project/template cache from a remote machine",
         description=(
-            "Copies the local colette binary to the path configured in 'colette_path'\n"
-            "on one or all remote machines (skips machines without 'colette_path' set),\n"
-            "then fetches each remote machine's own project/template data over SSH and\n"
-            "caches it locally (read-only — never authoritative, never pushed back).\n\n"
+            "Fetches each remote machine's own project/template data over SSH\n"
+            "(via the colette binary at its configured 'colette_path' — skips machines\n"
+            "without 'colette_path' set) and caches it locally (read-only — never\n"
+            "authoritative, never pushed back). Does not touch the remote colette\n"
+            "binary itself — keeping it updated on each machine is your own\n"
+            "responsibility.\n\n"
             "Set 'colette_path' when adding or editing a machine:\n"
             "  colette config edit-machine <name>"
         ),

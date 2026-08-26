@@ -45,9 +45,9 @@ colette_cli/
                            resolve_ide_command, write_project_record/delete_project_record dispatcher
     formatting.py          ANSI colours, err() / warn() / info()
     validation.py          validate_project_name / validate_machine_name
-    ssh.py                 ssh_run, ssh_interactive, sync_remote_colette (binary push), fetch_self_report
-                           (project/template pull), push_project_entry/remove_remote_project_entry,
-                           push_project_hooks/push_template_hooks, ssh_read_hook_files (batched fetch)
+    ssh.py                 ssh_run, ssh_interactive, fetch_self_report (project/template pull),
+                           push_project_entry/remove_remote_project_entry, push_project_hooks/
+                           push_template_hooks, ssh_read_hook_files (batched fetch)
     tmux.py                local_tmux_session, ensure_session, get_sessions, create_tmux_window_with_panes
     notify.py              send_notification(title, body) — desktop notifications (Linux/macOS)
 tests/
@@ -362,28 +362,20 @@ for the next `colette config sync`:
 
 Each machine's `~/.config/colette/` is authoritative only for its own
 projects and templates — the controller never keeps a permanent, owned copy
-of a remote's data. Two independent mechanisms make this work, kept
-deliberately separate:
+of a remote's data. Colette also never installs or updates its own binary on
+a remote machine — keeping the `colette` binary at each machine's configured
+`colette_path` up to date is entirely the user's own responsibility (e.g.
+`colette update` still runs the `onupdate` project hook, but does nothing to
+the colette binary itself).
 
-1. **Binary sync (push, unchanged from before this model)** —
-   `sync_remote_colette` (`utils/ssh.py`) SCPs the local `build/prod/colette`
-   binary to a remote's configured `colette_path` when versions differ. The
-   binary genuinely originates on the controller (built via
-   `./scripts/build.sh`); there's nothing to pull. Thread-local cache
-   (`_synced_machines`) avoids re-checking the same machine twice per
-   process invocation. **Only actually called from**: `cmd_start`,
-   `cmd_update`, the TUI's manual "Sync colette" action, and
-   `cmd_config_sync` — not from every SSH-touching command (`create`,
-   `delete`, `attach`, `ide`, `agent`, `link`, `stop` never trigger it).
-2. **Project/template sync (pull)** — `colette config sync [machine]`
-   (`cmd_config_sync`, `config/commands.py`) runs binary sync, then SSHs a
-   internal `colette debug self-report` command on the remote (which dumps
-   that machine's own `projects.json` plus its own machine entry's
-   `projects_dir`/`templates` as JSON — `cmd_debug_self_report`,
-   `debug/commands.py`) and writes the result into
-   `~/.config/colette/cache/<machine>.json`. This is the **only** way the
-   cache gets refreshed in bulk; nothing pushes local data to a remote's
-   registry.
+**Project/template sync (pull)** — `colette config sync [machine]`
+(`cmd_config_sync`, `config/commands.py`) SSHs an internal `colette debug
+self-report` command on the remote (which dumps that machine's own
+`projects.json` plus its own machine entry's `projects_dir`/`templates` as
+JSON — `cmd_debug_self_report`, `debug/commands.py`) and writes the result
+into `~/.config/colette/cache/<machine>.json`. This is the **only** way the
+cache gets refreshed in bulk; nothing pushes local data to a remote's
+registry.
 
 Two smaller mechanisms round this out — both described in "Hook system
 architecture" above and "Config file schemas" below, respectively:
@@ -430,28 +422,23 @@ commands are:
 ./scripts/install.sh          # copies build/prod/colette → ~/.local/bin/colette
 ```
 
-`build/prod/colette` is the **canonical local binary**. It is the file that gets
-copied to remote machines and the file that `colette --version` reports.
-
-### Status messages (binary sync)
-
-| Outcome | Message |
-|---|---|
-| Binary absent on remote | `✓ Installed colette on '<machine>'` |
-| Binary version differs | `✓ Updated colette on '<machine>'` |
-| Binary already current | `✓ colette on '<machine>' is up to date` |
+`build/prod/colette` is the **canonical local binary** and the file that
+`colette --version` reports. Colette never copies it to a remote machine
+itself — see "Decentralized remote-machine model" above.
 
 ### For developers
 
-**Before testing against a remote machine**, always build and promote
-(inside `sandbox/`'s container — never on the host, see "Running tests"
-below):
+**Before testing against the sandbox's fake remote machine**, always build
+and promote (inside `sandbox/`'s container — never on the host, see "Running
+tests" below), then copy the binary onto `ssh-target` yourself (colette has
+no auto-install path — see `sandbox/README.md`'s "Testing the SSH remote
+machine" section for the exact copy command):
 
 ```bash
-./scripts/build.sh && ./scripts/build.sh prod
+./scripts/build.sh && ./scripts/build.sh prod && ./scripts/install.sh
 ```
 
-The manual sync command (useful for debugging, also runs the project/template pull) is:
+The manual project/template pull (useful for debugging) is:
 
 ```bash
 colette config sync [machine-name]

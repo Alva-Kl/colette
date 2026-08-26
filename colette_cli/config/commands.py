@@ -169,7 +169,7 @@ def cmd_config_add_machine(args):
         if key:
             machine["ssh_key"] = str(Path(key).expanduser())
         colette_path = input(
-            "Path to colette binary on this machine (leave empty to skip auto-sync): "
+            "Path to colette binary on this machine (leave empty to skip 'config sync'): "
         ).strip()
         if colette_path:
             machine["colette_path"] = colette_path
@@ -657,17 +657,17 @@ def cmd_config_rename_template(args):
 
 
 def cmd_config_sync(args):
-    """Sync the local colette binary and pull a read-only project/template
-    cache from one or all remote machines.
+    """Pull a read-only project/template cache from one or all remote machines.
 
     Never pushes local project/template data outward — each remote machine
     remains authoritative for its own state. This is purely a read-only pull
-    into `~/.config/colette/cache/<machine>.json`.
+    into `~/.config/colette/cache/<machine>.json`. Does not touch the remote
+    colette binary itself — keeping it updated is the user's responsibility.
     """
     from datetime import datetime, timezone
 
     from colette_cli.utils.config import save_machine_cache
-    from colette_cli.utils.ssh import fetch_self_report, sync_remote_colette
+    from colette_cli.utils.ssh import fetch_self_report
 
     cfg = load_config()
     machine_name = getattr(args, "machine_name", None)
@@ -689,11 +689,6 @@ def cmd_config_sync(args):
         if not machine.get("colette_path"):
             print(f"  {name}: no colette_path set, skipping.")
             continue
-        synced = sync_remote_colette(machine, name)
-        if synced is True:
-            info(f"colette synced to '{name}' at {machine['colette_path']}")
-        elif synced is False:
-            print(f"  {name}: binary already up to date.")
 
         report = fetch_self_report(machine, name)
         if report is None:

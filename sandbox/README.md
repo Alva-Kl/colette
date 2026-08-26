@@ -79,19 +79,30 @@ bind-mounted repo.
 
 The `sandbox` container's config already has an `ssh-target` machine entry
 pointing at `colette_path: /root/.local/bin/colette` on `ssh-target` — but
-that path doesn't exist there yet on first boot. Trigger colette's own real
-provisioning path (`sync_remote_colette`) to install it, exactly like a real
-user adding a new remote machine would:
+that path doesn't exist there yet on first boot. Colette has no built-in way
+to install itself on a remote (that's the user's own responsibility, same as
+on a real machine), so put it there directly: both containers' `$HOME`s are
+bind-mounted from the host, and the `sandbox` container additionally mounts
+`ssh-target`'s home at `/ssh-target-home` (`docker-compose.yml`), so a plain
+copy across that shared mount is enough — no SSH round-trip needed:
+
+```bash
+docker compose -f sandbox/docker-compose.yml exec sandbox bash -lc '
+  mkdir -p /ssh-target-home/.local/bin
+  cp /root/.local/bin/colette /ssh-target-home/.local/bin/colette
+  chmod +x /ssh-target-home/.local/bin/colette
+'
+```
+
+Then pull `ssh-target`'s own seeded fake projects/templates into the
+sandbox's local cache the same way a real user would:
 
 ```bash
 docker compose -f sandbox/docker-compose.yml exec sandbox colette config sync ssh-target
 ```
 
-This scp's the freshly-built zipapp over (via the actual `sync_remote_colette`
-code path, not a shortcut) and pulls `ssh-target`'s own seeded fake
-projects/templates into the sandbox's local cache. After that, "Create
-project" / "Link project" / etc. against machine `ssh-target` exercise the
-real remote-machine flow end-to-end.
+After that, "Create project" / "Link project" / etc. against machine
+`ssh-target` exercise the real remote-machine flow end-to-end.
 
 ## Resetting state
 
