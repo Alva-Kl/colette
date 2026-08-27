@@ -81,6 +81,33 @@ class TestCmdConfigList:
         cmd_config_list(MagicMock())
         assert "(not set)" in capsys.readouterr().out
 
+    def test_shows_synced_templates_from_cache(self, tmp_config, capsys):
+        """A machine's own config.json never carries synced templates - they
+        only ever land in its read-only sync cache. The summary line must
+        still surface them, not just locally-authored ones."""
+        from colette_cli.utils.config import save_config, save_machine_cache
+        from colette_cli.config.commands import cmd_config_list
+        cfg = {
+            "machines": {
+                "remote": {
+                    "type": "ssh",
+                    "host": "user@host",
+                    "projects_dir": "/home/user/projects",
+                    "colette_path": "/home/user/bin/colette",
+                }
+            }
+        }
+        save_config(cfg)
+        save_machine_cache("remote", {
+            "machine": "remote",
+            "synced_at": "2026-01-01T00:00:00Z",
+            "projects_dir": "/home/user/projects",
+            "templates": [{"name": "synced-tmpl", "type": "directory", "path": "/tmp"}],
+            "projects": [],
+        })
+        cmd_config_list(MagicMock())
+        assert "synced-tmpl" in capsys.readouterr().out
+
 
 class TestCmdConfigAddMachine:
     def test_empty_name_exits(self, tmp_config):
@@ -591,6 +618,59 @@ class TestCmdConfigEditProjectHook:
             cmd_config_edit_project_hook(args)
 
 
+class TestCmdConfigListTemplates:
+    def test_shows_local_template_with_hooks_dir(self, tmp_config, capsys):
+        from colette_cli.utils.config import save_config
+        from colette_cli.config.commands import cmd_config_list_templates
+        cfg = {
+            "machines": {
+                "local": {
+                    "type": "local",
+                    "projects_dir": "/p",
+                    "templates": [{"name": "t1", "type": "directory", "path": "/t"}],
+                }
+            },
+            "default_machine": "local",
+        }
+        save_config(cfg)
+        cmd_config_list_templates(MagicMock(machine_name="local"))
+        out = capsys.readouterr().out
+        assert "t1" in out
+        assert "hooks_dir:" in out
+
+    def test_shows_synced_only_template_without_hooks_dir(self, tmp_config, capsys):
+        """A template that only exists in the sync cache (authored on the
+        remote, never locally configured) must still show up here, but
+        without hooks_dir/hook files/params lines that only apply to
+        locally-owned templates."""
+        from colette_cli.utils.config import save_config, save_machine_cache
+        from colette_cli.config.commands import cmd_config_list_templates
+        cfg = {
+            "machines": {
+                "remote": {
+                    "type": "ssh",
+                    "host": "user@host",
+                    "projects_dir": "/home/user/projects",
+                    "colette_path": "/home/user/bin/colette",
+                }
+            },
+            "default_machine": "remote",
+        }
+        save_config(cfg)
+        save_machine_cache("remote", {
+            "machine": "remote",
+            "synced_at": "2026-01-01T00:00:00Z",
+            "projects_dir": "/home/user/projects",
+            "templates": [{"name": "synced-tmpl", "type": "directory", "path": "/tmp"}],
+            "projects": [],
+        })
+        cmd_config_list_templates(MagicMock(machine_name="remote"))
+        out = capsys.readouterr().out
+        assert "synced-tmpl" in out
+        assert "not locally editable" in out
+        assert "hooks_dir:" not in out
+
+
 class TestCmdConfigRemoveTemplate:
     def test_removes_template_from_machine(self, tmp_config):
         from colette_cli.utils.config import save_config, load_config
@@ -767,7 +847,9 @@ class TestCmdConfigSync:
         with patch("colette_cli.utils.ssh.fetch_self_report") as mock_report:
             cmd_config_sync(args)
         mock_report.assert_not_called()
-        assert "no colette_path set" in capsys.readouterr().out
+        captured = capsys.readouterr()
+        assert "no colette_path set" in captured.err
+        assert "skipped (no colette_path set): myremote" in captured.err
 
     def test_exits_when_named_machine_not_found(self, tmp_config):
         from colette_cli.utils.config import save_config

@@ -3,6 +3,8 @@
 from pathlib import Path
 
 from colette_cli.template import (
+    list_creatable_template_names,
+    list_creatable_templates,
     list_machine_template_hook_paths,
     list_machine_template_names,
     normalize_machine_templates,
@@ -89,7 +91,7 @@ def cmd_config_list(args):
             print(f"    colette_path: {cp if cp else '(not set)'}")
         else:
             print(f"  {bold(name)}{tag}  -  local")
-        template_names = list_machine_template_names(m)
+        template_names = list_creatable_template_names(m, name)
         print(
             f"    templates:    {', '.join(template_names) if template_names else 'N/A'}"
         )
@@ -107,9 +109,10 @@ def cmd_config_list_templates(args):
     if not machine_name:
         err("no machine specified and no default machine set.")
     machine = require_machine(cfg, machine_name)
-    templates = normalize_machine_templates(machine)
+    local_names = {t["name"] for t in normalize_machine_templates(machine)}
+    templates = list_creatable_templates(machine, machine_name)
     if not templates:
-        print(f"No templates configured for machine '{machine_name}'.")
+        print(f"No templates available for machine '{machine_name}'.")
         return
     print(f"\n{bold(f'Templates for {machine_name}:')}")
     for template in templates:
@@ -119,6 +122,9 @@ def cmd_config_list_templates(args):
         description = template.get("description")
         if description:
             print(f"    {description}")
+        if tname not in local_names:
+            print(f"    (synced from '{machine_name}', not locally editable)")
+            continue
         hooks_dir = get_machine_template_dir(machine_name, tname)
         print(f"    hooks_dir: {hooks_dir}")
         scripts = list_machine_template_hook_paths(machine_name, tname)
@@ -685,9 +691,11 @@ def cmd_config_sync(args):
         return
 
     failed = []
+    skipped = []
     for name, machine in targets.items():
         if not machine.get("colette_path"):
-            print(f"  {name}: no colette_path set, skipping.")
+            warn(f"{name}: no colette_path set, skipping.")
+            skipped.append(name)
             continue
 
         report = fetch_self_report(machine, name)
@@ -709,6 +717,8 @@ def cmd_config_sync(args):
             f"{len(cache_data['templates'])} template(s) from '{name}'."
         )
 
+    if skipped:
+        warn(f"skipped (no colette_path set): {', '.join(skipped)}.")
     if failed:
         err(f"failed to fetch project/template data from: {', '.join(failed)}.")
 

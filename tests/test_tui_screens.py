@@ -1269,6 +1269,34 @@ class TestMachineTemplateItems:
         labels = _item_labels(machine_template_items("local"))
         assert "my-tmpl" in labels
 
+    def test_synced_templates_from_cache_appear(self, tmp_config):
+        """Templates authored on a remote and pulled by `colette config sync`
+        live only in the machine's read-only cache, never in its own
+        config.json - the browse screen must still surface them."""
+        from colette_cli.utils.config import save_config, save_machine_cache
+        from colette_cli.tui.screens import machine_template_items
+        cfg = {
+            "machines": {
+                "remote": {
+                    "type": "ssh",
+                    "host": "user@host",
+                    "projects_dir": "/home/user/projects",
+                    "colette_path": "/home/user/bin/colette",
+                }
+            },
+            "default_machine": "remote",
+        }
+        save_config(cfg)
+        save_machine_cache("remote", {
+            "machine": "remote",
+            "synced_at": "2026-01-01T00:00:00Z",
+            "projects_dir": "/home/user/projects",
+            "templates": [{"name": "synced-tmpl", "type": "directory", "path": "/tmp"}],
+            "projects": [],
+        })
+        labels = _item_labels(machine_template_items("remote"))
+        assert "synced-tmpl" in labels
+
     def test_add_template_saves_to_machine(self, tmp_config):
         from colette_cli.utils.config import save_config, load_config
         from colette_cli.tui.screens import machine_template_items

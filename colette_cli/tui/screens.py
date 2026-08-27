@@ -29,6 +29,7 @@ from colette_cli.utils.config import (
 from colette_cli.template import (
     get_project_template_name,
     get_template_metadata,
+    list_creatable_template_names,
     list_machine_template_names,
     normalize_machine_templates,
     scaffold_template_hook_files,
@@ -569,7 +570,6 @@ def main_menu_items():
 def _create_project_interactive():
     """Collect project details via a form and create the project async."""
     from .forms import form, FormField
-    from colette_cli.template.registry import list_creatable_template_names
 
     cfg = load_config()
     machines = list(cfg.get("machines", {}).keys())
@@ -905,7 +905,7 @@ def machine_project_items(machine_name):
 def machine_template_items(machine_name):
     cfg = load_config()
     machine = cfg.get("machines", {}).get(machine_name, {})
-    template_names = list_machine_template_names(machine)
+    template_names = list_creatable_template_names(machine, machine_name)
 
     items = [MenuItem("Add template", action=_popup(lambda: _add_template_interactive(machine_name)))]
 
