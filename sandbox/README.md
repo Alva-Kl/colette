@@ -1,18 +1,18 @@
 # Colette sandbox
 
 A disposable, fully isolated Docker environment for testing the real
-`colette` binary/TUI end-to-end — fake projects, fake templates, and an
-optional fake SSH "remote machine" — without ever touching this host's live
+`colette` binary/TUI end-to-end: fake projects, fake templates, and an
+optional fake SSH "remote machine", without ever touching this host's live
 `~/.config/colette` or `~/colette-projects`. See `DEVELOPMENT.md`'s "Sandbox"
 section for the full rationale.
 
 Two containers, both on a private `colette-sandbox-net` network, no ports
 published anywhere:
 
-- **`sandbox`** — where you actually run `colette tui`. Its `$HOME` is
+- **`sandbox`**: where you actually run `colette tui`. Its `$HOME` is
   `sandbox/state/sandbox-home/` (bind-mounted, gitignored), seeded on first
   boot with a `local` machine plus a couple of fake projects/templates.
-- **`ssh-target`** — a bare `sshd`, playing the role of a remote `type: ssh`
+- **`ssh-target`**: a bare `sshd`, playing the role of a remote `type: ssh`
   machine so the SSH-driven code paths (`colette_cli/utils/ssh.py`) get
   exercised too, not just the local ones.
 
@@ -32,7 +32,7 @@ make sandbox-down       # stop both containers
 
 `sandbox-up`/`sandbox-build`/`sandbox-shell`/`test` all wait for the
 container's entrypoint (seeding + SSH provisioning + installing
-`requirements-dev.txt`) to actually finish before proceeding — `docker
+`requirements-dev.txt`) to actually finish before proceeding: `docker
 compose up -d` alone returns as soon as the container *starts*, not once
 it's ready.
 
@@ -44,7 +44,7 @@ docker compose -f sandbox/docker-compose.yml up -d
 # Build + install the real colette binary inside the sandbox container
 # (reuses the project's own scripts, picks up any uncommitted edits since
 # the repo is bind-mounted, not copied). Plain `./scripts/build.sh prod`
-# never touches the version number — pass --bump only when you actually
+# never touches the version number, pass --bump only when you actually
 # mean to cut a release (see DEVELOPMENT.md's Build pipeline section):
 docker compose -f sandbox/docker-compose.yml exec sandbox bash -lc '
   cd /workspace && ./scripts/build.sh && ./scripts/build.sh prod && ./scripts/install.sh
@@ -65,7 +65,7 @@ transcript contained an unhandled Python traceback.
 ## Running the unit test suite
 
 Colette's own dev/test workflow is Docker-only, same as every other project
-on this host — never run `pytest`/`python3 -m pytest` directly on the host:
+on this host: never run `pytest`/`python3 -m pytest` directly on the host:
 
 ```bash
 make test
@@ -78,13 +78,13 @@ bind-mounted repo.
 ## Testing the SSH remote machine
 
 The `sandbox` container's config already has an `ssh-target` machine entry
-pointing at `colette_path: /root/.local/bin/colette` on `ssh-target` — but
+pointing at `colette_path: /root/.local/bin/colette` on `ssh-target`, but
 that path doesn't exist there yet on first boot. Colette has no built-in way
 to install itself on a remote (that's the user's own responsibility, same as
 on a real machine), so put it there directly: both containers' `$HOME`s are
 bind-mounted from the host, and the `sandbox` container additionally mounts
 `ssh-target`'s home at `/ssh-target-home` (`docker-compose.yml`), so a plain
-copy across that shared mount is enough — no SSH round-trip needed:
+copy across that shared mount is enough, no SSH round-trip needed:
 
 ```bash
 docker compose -f sandbox/docker-compose.yml exec sandbox bash -lc '
@@ -117,10 +117,10 @@ make sandbox-up
 
 ## Why this is safe to run on this host
 
-- Everything lives under a container-local `$HOME` — colette's config dir
+- Everything lives under a container-local `$HOME`: colette's config dir
   is hardcoded to `Path.home() / ".config" / "colette"` with no env
   override, so a container's own `$HOME` is complete isolation.
-- No ports are published on either container — nothing here is reachable
+- No ports are published on either container: nothing here is reachable
   from the host or the internet.
 - A dedicated `colette-sandbox-net` Docker network, separate from the host's
   real `proxy` network used by Traefik and the live production stacks.
