@@ -1,6 +1,7 @@
 """Tests for colette_cli.config.commands."""
 
 import pytest
+from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -114,7 +115,7 @@ class TestCmdConfigAddMachine:
         from colette_cli.config.commands import cmd_config_add_machine
         with patch("builtins.input", side_effect=[""]):
             with pytest.raises(SystemExit):
-                cmd_config_add_machine(MagicMock())
+                cmd_config_add_machine(Namespace())
 
     def test_duplicate_name_exits(self, tmp_config):
         from colette_cli.utils.config import save_config
@@ -122,31 +123,31 @@ class TestCmdConfigAddMachine:
         save_config(LOCAL_CFG)
         with patch("builtins.input", side_effect=["local"]):
             with pytest.raises(SystemExit):
-                cmd_config_add_machine(MagicMock())
+                cmd_config_add_machine(Namespace())
 
     def test_invalid_type_exits(self, tmp_config):
         from colette_cli.config.commands import cmd_config_add_machine
         with patch("builtins.input", side_effect=["newmachine", "docker"]):
             with pytest.raises(SystemExit):
-                cmd_config_add_machine(MagicMock())
+                cmd_config_add_machine(Namespace())
 
     def test_empty_ssh_host_exits(self, tmp_config):
         from colette_cli.config.commands import cmd_config_add_machine
         with patch("builtins.input", side_effect=["newmachine", "ssh", ""]):
             with pytest.raises(SystemExit):
-                cmd_config_add_machine(MagicMock())
+                cmd_config_add_machine(Namespace())
 
     def test_non_digit_port_exits(self, tmp_config):
         from colette_cli.config.commands import cmd_config_add_machine
         with patch("builtins.input", side_effect=["newmachine", "ssh", "user@host", "notanumber"]):
             with pytest.raises(SystemExit):
-                cmd_config_add_machine(MagicMock())
+                cmd_config_add_machine(Namespace())
 
     def test_empty_projects_dir_exits(self, tmp_config):
         from colette_cli.config.commands import cmd_config_add_machine
         with patch("builtins.input", side_effect=["newmachine", "local", "", ""]):
             with pytest.raises(SystemExit):
-                cmd_config_add_machine(MagicMock())
+                cmd_config_add_machine(Namespace())
 
     def test_creates_local_machine_and_becomes_default(self, tmp_config):
         from colette_cli.utils.config import load_config
@@ -154,7 +155,7 @@ class TestCmdConfigAddMachine:
         with patch("builtins.input", side_effect=[
             "newmachine", "local", "", "/home/user/projects",
         ]):
-            cmd_config_add_machine(MagicMock())
+            cmd_config_add_machine(Namespace())
         cfg = load_config()
         assert cfg["machines"]["newmachine"]["type"] == "local"
         assert cfg["machines"]["newmachine"]["projects_dir"] == "/home/user/projects"
@@ -167,7 +168,7 @@ class TestCmdConfigAddMachine:
             "newmachine", "ssh", "user@host", "2222", "/home/user/.ssh/id_ed25519",
             "/home/user/.local/bin/colette", "", "/home/user/projects",
         ]):
-            cmd_config_add_machine(MagicMock())
+            cmd_config_add_machine(Namespace())
         cfg = load_config()
         machine = cfg["machines"]["newmachine"]
         assert machine["type"] == "ssh"
@@ -183,7 +184,7 @@ class TestCmdConfigAddMachine:
         with patch("builtins.input", side_effect=[
             "newmachine", "local", "", "/home/user/projects", "n",
         ]):
-            cmd_config_add_machine(MagicMock())
+            cmd_config_add_machine(Namespace())
         assert load_config()["default_machine"] == "local"
 
     def test_accepts_setting_as_default_when_one_already_exists(self, tmp_config):
@@ -193,7 +194,7 @@ class TestCmdConfigAddMachine:
         with patch("builtins.input", side_effect=[
             "newmachine", "local", "", "/home/user/projects", "y",
         ]):
-            cmd_config_add_machine(MagicMock())
+            cmd_config_add_machine(Namespace())
         assert load_config()["default_machine"] == "newmachine"
 
     def test_optional_template_scaffolds_hooks(self, tmp_config):
@@ -202,17 +203,87 @@ class TestCmdConfigAddMachine:
         with patch("builtins.input", side_effect=[
             "newmachine", "local", "mytmpl", "directory", "/tmpl/path", "/home/user/projects",
         ]):
-            cmd_config_add_machine(MagicMock())
+            cmd_config_add_machine(Namespace())
         cfg = load_config()
         tmpl = cfg["machines"]["newmachine"]["templates"][0]
         assert tmpl == {"name": "mytmpl", "type": "directory", "path": "/tmpl/path"}
         assert machine_template_hook_exists("newmachine", "mytmpl", "oncreate")
 
+    def test_flags_only_never_prompts(self, tmp_config):
+        """Every value passed as a flag means no input() call is reached at all.
+
+        template="" (not None) signals "explicitly no template" non-interactively —
+        omitting --template entirely (None) still falls back to the interactive
+        prompt, matching the original zero-flag experience.
+        """
+        from colette_cli.utils.config import load_config
+        from colette_cli.config.commands import cmd_config_add_machine
+        with patch("builtins.input") as mock_input:
+            cmd_config_add_machine(Namespace(
+                name="flagged", type="local", host=None, port=None, key=None,
+                colette_path=None, template="", template_type=None,
+                template_source=None, projects_dir="/home/user/projects", default=False,
+            ))
+        mock_input.assert_not_called()
+        cfg = load_config()
+        assert cfg["machines"]["flagged"]["projects_dir"] == "/home/user/projects"
+
+    def test_flags_set_ssh_machine_and_template_without_prompting(self, tmp_config):
+        from colette_cli.utils.config import load_config, machine_template_hook_exists
+        from colette_cli.config.commands import cmd_config_add_machine
+        with patch("builtins.input") as mock_input:
+            cmd_config_add_machine(Namespace(
+                name="flagged", type="ssh", host="user@host", port=2222,
+                key="/home/user/.ssh/id_ed25519", colette_path="/home/user/.local/bin/colette",
+                template="mytmpl", template_type="directory", template_source="/tmpl/path",
+                projects_dir="/home/user/projects", default=False,
+            ))
+        mock_input.assert_not_called()
+        machine = load_config()["machines"]["flagged"]
+        assert machine["host"] == "user@host"
+        assert machine["port"] == 2222
+        assert machine["templates"][0] == {"name": "mytmpl", "type": "directory", "path": "/tmpl/path"}
+        assert machine_template_hook_exists("flagged", "mytmpl", "oncreate")
+
+    def test_non_interactive_skips_omitted_optional_values_without_crashing(self, tmp_config, monkeypatch):
+        """A script/agent that only passes the required flags and omits every
+        optional one (rather than passing --template "" explicitly) must not
+        hang or raise EOFError when stdin isn't a real terminal — it should
+        just get the same "blank answer" defaults a human declining each
+        prompt would get.
+        """
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.config.commands import cmd_config_add_machine
+        save_config(LOCAL_CFG)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        cmd_config_add_machine(Namespace(
+            name="flagged", type="local", host=None, port=None, key=None,
+            colette_path=None, template=None, template_type=None,
+            template_source=None, projects_dir="/home/user/projects", default=False,
+        ))
+        cfg = load_config()
+        assert cfg["machines"]["flagged"]["projects_dir"] == "/home/user/projects"
+        assert "templates" not in cfg["machines"]["flagged"]
+        assert cfg["default_machine"] == "local"
+
+    def test_default_flag_sets_default_machine_without_prompting(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.config.commands import cmd_config_add_machine
+        save_config(LOCAL_CFG)
+        with patch("builtins.input") as mock_input:
+            cmd_config_add_machine(Namespace(
+                name="flagged", type="local", host=None, port=None, key=None,
+                colette_path=None, template="", template_type=None,
+                template_source=None, projects_dir="/home/user/projects", default=True,
+            ))
+        mock_input.assert_not_called()
+        assert load_config()["default_machine"] == "flagged"
+
 
 class TestCmdConfigEditMachine:
     def test_missing_machine_exits(self, tmp_config):
         from colette_cli.config.commands import cmd_config_edit_machine
-        args = MagicMock(machine_name="nope")
+        args = Namespace(machine_name="nope")
         with pytest.raises(SystemExit):
             cmd_config_edit_machine(args)
 
@@ -220,7 +291,7 @@ class TestCmdConfigEditMachine:
         from colette_cli.utils.config import save_config, load_config
         from colette_cli.config.commands import cmd_config_edit_machine
         save_config(LOCAL_CFG)
-        args = MagicMock(machine_name="local")
+        args = Namespace(machine_name="local")
         with patch("builtins.input", side_effect=[
             "ssh", "user@newhost", "", "", "", "", "", "",
         ]):
@@ -241,7 +312,7 @@ class TestCmdConfigEditMachine:
             },
             "default_machine": "remote",
         })
-        args = MagicMock(machine_name="remote")
+        args = Namespace(machine_name="remote")
         with patch("builtins.input", side_effect=["local", "", "", ""]):
             cmd_config_edit_machine(args)
         machine = load_config()["machines"]["remote"]
@@ -257,7 +328,7 @@ class TestCmdConfigEditMachine:
             "machines": {"remote": {"type": "ssh", "host": "h", "projects_dir": "/p"}},
             "default_machine": "remote",
         })
-        args = MagicMock(machine_name="remote")
+        args = Namespace(machine_name="remote")
         with patch("builtins.input", side_effect=["ssh", "", "notanumber"]):
             with pytest.raises(SystemExit):
                 cmd_config_edit_machine(args)
@@ -269,7 +340,7 @@ class TestCmdConfigEditMachine:
             "machines": {"remote": {"type": "ssh", "host": "h", "port": 2222, "projects_dir": "/p"}},
             "default_machine": "remote",
         })
-        args = MagicMock(machine_name="remote")
+        args = Namespace(machine_name="remote")
         with patch("builtins.input", side_effect=["ssh", "", "", "", "", "", "", ""]):
             cmd_config_edit_machine(args)
         assert load_config()["machines"]["remote"]["port"] == 2222
@@ -278,12 +349,32 @@ class TestCmdConfigEditMachine:
         from colette_cli.utils.config import save_config, load_config
         from colette_cli.config.commands import cmd_config_edit_machine
         save_config(LOCAL_CFG)
-        args = MagicMock(machine_name="local")
+        args = Namespace(machine_name="local")
         with patch("builtins.input", side_effect=[
             "local", "/home/user/projects", "claude --resume", "zed --wait",
         ]):
             cmd_config_edit_machine(args)
         machine = load_config()["machines"]["local"]
+        assert machine["agent_command"] == "claude --resume"
+        assert machine["ide_command"] == "zed --wait"
+
+    def test_flags_only_never_prompts(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.config.commands import cmd_config_edit_machine
+        save_config(LOCAL_CFG)
+        args = Namespace(
+            machine_name="local", type="ssh", host="user@newhost", port=2200,
+            key="/k", colette_path="/c", projects_dir="/p2",
+            agent_command="claude --resume", ide_command="zed --wait",
+        )
+        with patch("builtins.input") as mock_input:
+            cmd_config_edit_machine(args)
+        mock_input.assert_not_called()
+        machine = load_config()["machines"]["local"]
+        assert machine["type"] == "ssh"
+        assert machine["host"] == "user@newhost"
+        assert machine["port"] == 2200
+        assert machine["projects_dir"] == "/p2"
         assert machine["agent_command"] == "claude --resume"
         assert machine["ide_command"] == "zed --wait"
 
@@ -316,7 +407,7 @@ class TestCmdConfigRemoveMachine:
             "default_machine": "a",
         })
         with patch("builtins.input", return_value="y"):
-            cmd_config_remove_machine(MagicMock(machine_name="b"))
+            cmd_config_remove_machine(Namespace(machine_name="b"))
         assert "b" not in load_config()["machines"]
 
     def test_aborts_on_no(self, tmp_config):
@@ -324,7 +415,7 @@ class TestCmdConfigRemoveMachine:
         from colette_cli.config.commands import cmd_config_remove_machine
         save_config(LOCAL_CFG)
         with patch("builtins.input", return_value="n"):
-            cmd_config_remove_machine(MagicMock(machine_name="local"))
+            cmd_config_remove_machine(Namespace(machine_name="local"))
         assert "local" in load_config()["machines"]
 
     def test_clears_default_when_removed(self, tmp_config):
@@ -332,7 +423,7 @@ class TestCmdConfigRemoveMachine:
         from colette_cli.config.commands import cmd_config_remove_machine
         save_config({"machines": {"a": {"type": "local"}}, "default_machine": "a"})
         with patch("builtins.input", return_value="y"):
-            cmd_config_remove_machine(MagicMock(machine_name="a"))
+            cmd_config_remove_machine(Namespace(machine_name="a"))
         assert load_config().get("default_machine") is None
 
     def test_fails_on_unknown_machine(self, tmp_config):
@@ -340,7 +431,7 @@ class TestCmdConfigRemoveMachine:
         from colette_cli.config.commands import cmd_config_remove_machine
         save_config(LOCAL_CFG)
         with pytest.raises(SystemExit):
-            cmd_config_remove_machine(MagicMock(machine_name="nope"))
+            cmd_config_remove_machine(Namespace(machine_name="nope"))
 
     def test_keeps_other_machines_when_one_is_removed(self, tmp_config):
         from colette_cli.utils.config import save_config, load_config
@@ -353,11 +444,34 @@ class TestCmdConfigRemoveMachine:
             "default_machine": "local",
         })
         with patch("builtins.input", return_value="y"):
-            cmd_config_remove_machine(MagicMock(machine_name="other"))
+            cmd_config_remove_machine(Namespace(machine_name="other"))
         cfg = load_config()
         assert "local" in cfg["machines"]
         assert "other" not in cfg["machines"]
         assert cfg["default_machine"] == "local"
+
+    def test_yes_flag_skips_confirmation(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.config.commands import cmd_config_remove_machine
+        save_config({
+            "machines": {"a": {"type": "local"}, "b": {"type": "local"}},
+            "default_machine": "a",
+        })
+        with patch("builtins.input") as mock_input:
+            cmd_config_remove_machine(Namespace(machine_name="b", yes=True))
+        mock_input.assert_not_called()
+        assert "b" not in load_config()["machines"]
+
+    def test_non_interactive_without_yes_aborts_without_crashing(self, tmp_config, monkeypatch):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.config.commands import cmd_config_remove_machine
+        save_config({
+            "machines": {"a": {"type": "local"}, "b": {"type": "local"}},
+            "default_machine": "a",
+        })
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        cmd_config_remove_machine(Namespace(machine_name="b", yes=False))
+        assert "b" in load_config()["machines"]
 
 
 class TestCmdConfigRenameMachine:
@@ -587,9 +701,12 @@ class TestCmdConfigSetTemplateParams:
 
 
 class TestCmdConfigEditHook:
-    def test_opens_nano_for_template_hook(self, tmp_config):
+    def test_opens_nano_for_template_hook(self, tmp_config, monkeypatch):
+        from colette_cli.utils.config import save_config
         from colette_cli.config.commands import cmd_config_edit_hook
-        args = MagicMock(template_name="tmpl", hook_name="onstart")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        save_config(LOCAL_CFG)
+        args = Namespace(template_name="tmpl", hook_name="onstart", machine=None, content_file=None)
         with patch("subprocess.run") as mock_run:
             cmd_config_edit_hook(args)
         mock_run.assert_called_once()
@@ -597,14 +714,57 @@ class TestCmdConfigEditHook:
         assert cmd_args[0] == "nano"
         assert "onstart" in cmd_args[1] or ".onstart" in cmd_args[1]
 
+    def test_content_file_writes_hook_without_nano(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, read_machine_template_hook
+        from colette_cli.config.commands import cmd_config_edit_hook
+        save_config(LOCAL_CFG)
+        content_file = tmp_path / "hook.sh"
+        content_file.write_text("#!/usr/bin/env bash\necho hi\n")
+        args = Namespace(
+            template_name="tmpl", hook_name="onstart", machine="local",
+            content_file=str(content_file),
+        )
+        with patch("subprocess.run") as mock_run:
+            cmd_config_edit_hook(args)
+        mock_run.assert_not_called()
+        assert read_machine_template_hook("local", "tmpl", "onstart") == "#!/usr/bin/env bash\necho hi\n"
+
+    def test_content_file_dash_reads_stdin(self, tmp_config, monkeypatch):
+        import io
+        from colette_cli.utils.config import save_config, read_machine_template_hook
+        from colette_cli.config.commands import cmd_config_edit_hook
+        save_config(LOCAL_CFG)
+        monkeypatch.setattr("sys.stdin", io.StringIO("echo piped\n"))
+        args = Namespace(
+            template_name="tmpl", hook_name="onstart", machine="local", content_file="-",
+        )
+        with patch("subprocess.run") as mock_run:
+            cmd_config_edit_hook(args)
+        mock_run.assert_not_called()
+        assert read_machine_template_hook("local", "tmpl", "onstart") == "echo piped\n"
+
+    def test_non_tty_stdin_writes_hook_without_flag(self, tmp_config, monkeypatch):
+        import io
+        from colette_cli.utils.config import save_config, read_machine_template_hook
+        from colette_cli.config.commands import cmd_config_edit_hook
+        save_config(LOCAL_CFG)
+        stdin = io.StringIO("echo from-pipe\n")
+        monkeypatch.setattr("sys.stdin", stdin)
+        args = Namespace(template_name="tmpl", hook_name="onstart", machine="local", content_file=None)
+        with patch("subprocess.run") as mock_run:
+            cmd_config_edit_hook(args)
+        mock_run.assert_not_called()
+        assert read_machine_template_hook("local", "tmpl", "onstart") == "echo from-pipe\n"
+
 
 class TestCmdConfigEditProjectHook:
-    def test_opens_nano_for_project_hook(self, tmp_config):
+    def test_opens_nano_for_project_hook(self, tmp_config, monkeypatch):
         from colette_cli.utils.config import save_config, save_local_projects
         from colette_cli.config.commands import cmd_config_edit_project_hook
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
         save_config(LOCAL_CFG)
         save_local_projects([make_project("proj")])
-        args = MagicMock(project_name="proj", hook_name="onstart")
+        args = Namespace(project_name="proj", hook_name="onstart", content_file=None)
         with patch("subprocess.run") as mock_run:
             cmd_config_edit_project_hook(args)
         mock_run.assert_called_once()
@@ -613,9 +773,22 @@ class TestCmdConfigEditProjectHook:
 
     def test_fails_when_project_not_registered(self, tmp_config):
         from colette_cli.config.commands import cmd_config_edit_project_hook
-        args = MagicMock(project_name="ghost", hook_name="onstart")
+        args = Namespace(project_name="ghost", hook_name="onstart", content_file=None)
         with pytest.raises(SystemExit):
             cmd_config_edit_project_hook(args)
+
+    def test_content_file_writes_hook_without_nano(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects, read_project_hook
+        from colette_cli.config.commands import cmd_config_edit_project_hook
+        save_config(LOCAL_CFG)
+        save_local_projects([make_project("proj")])
+        content_file = tmp_path / "hook.sh"
+        content_file.write_text("#!/usr/bin/env bash\necho hi\n")
+        args = Namespace(project_name="proj", hook_name="onstart", content_file=str(content_file))
+        with patch("subprocess.run") as mock_run:
+            cmd_config_edit_project_hook(args)
+        mock_run.assert_not_called()
+        assert read_project_hook("proj", "onstart") == "#!/usr/bin/env bash\necho hi\n"
 
 
 class TestCmdConfigListTemplates:
@@ -793,9 +966,10 @@ class TestCmdConfigRunTemplateUpdate:
             cmd_config(args)
         mock_fn.assert_called_once_with(args)
 
-    def test_opens_machine_specific_hook_when_machine_flag_given(self, tmp_config):
+    def test_opens_machine_specific_hook_when_machine_flag_given(self, tmp_config, monkeypatch):
         from colette_cli.config.commands import cmd_config_edit_hook
-        args = MagicMock(template_name="tmpl", hook_name="onstart", machine="remote")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        args = Namespace(template_name="tmpl", hook_name="onstart", machine="remote", content_file=None)
         with patch("subprocess.run") as mock_run:
             cmd_config_edit_hook(args)
         mock_run.assert_called_once()
@@ -803,11 +977,12 @@ class TestCmdConfigRunTemplateUpdate:
         assert cmd_args[0] == "nano"
         assert "machines/remote/templates/tmpl" in cmd_args[1]
 
-    def test_uses_default_machine_when_no_machine_flag(self, tmp_config):
+    def test_uses_default_machine_when_no_machine_flag(self, tmp_config, monkeypatch):
         from colette_cli.utils.config import save_config
         from colette_cli.config.commands import cmd_config_edit_hook
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
         save_config(LOCAL_CFG)
-        args = MagicMock(template_name="tmpl", hook_name="onstart", machine=None)
+        args = Namespace(template_name="tmpl", hook_name="onstart", machine=None, content_file=None)
         with patch("subprocess.run") as mock_run:
             cmd_config_edit_hook(args)
         cmd_args = mock_run.call_args[0][0]
@@ -926,7 +1101,7 @@ class TestCmdConfigAddTemplate:
         from colette_cli.utils.config import save_config, load_config, machine_template_hook_exists
         from colette_cli.config.commands import cmd_config_add_template
         save_config(LOCAL_CFG)
-        args = MagicMock(machine_name="local", template_name="newtmpl", params=["KEY=val"])
+        args = Namespace(machine_name="local", template_name="newtmpl", params=["KEY=val"])
         with patch("builtins.input", side_effect=["directory", "/tmpl/path", "A nice template"]):
             cmd_config_add_template(args)
         cfg = load_config()
@@ -941,7 +1116,7 @@ class TestCmdConfigAddTemplate:
         from colette_cli.utils.config import save_config, load_config
         from colette_cli.config.commands import cmd_config_add_template
         save_config(LOCAL_CFG)
-        args = MagicMock(machine_name="local", template_name="gittmpl", params=[])
+        args = Namespace(machine_name="local", template_name="gittmpl", params=[])
         with patch("builtins.input", side_effect=["git", "https://github.com/org/tmpl.git", ""]):
             cmd_config_add_template(args)
         entry = load_config()["machines"]["local"]["templates"][0]
@@ -955,7 +1130,7 @@ class TestCmdConfigAddTemplate:
             "machines": {"remote": {"type": "ssh", "host": "user@host", "projects_dir": "/home/user"}},
             "default_machine": "remote",
         })
-        args = MagicMock(machine_name="remote", template_name="newtmpl", params=[])
+        args = Namespace(machine_name="remote", template_name="newtmpl", params=[])
         with patch("builtins.input", side_effect=["directory", "/tmpl/path", ""]), \
              patch("colette_cli.utils.ssh.push_template_hooks") as mock_push:
             cmd_config_add_template(args)
@@ -973,9 +1148,26 @@ class TestCmdConfigAddTemplate:
             }},
             "default_machine": "local",
         })
-        args = MagicMock(machine_name="local", template_name="existing", params=[])
+        args = Namespace(machine_name="local", template_name="existing", params=[])
         with pytest.raises(SystemExit):
             cmd_config_add_template(args)
+
+    def test_flags_only_never_prompts(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.config.commands import cmd_config_add_template
+        save_config(LOCAL_CFG)
+        args = Namespace(
+            machine_name="local", template_name="newtmpl", params=["KEY=val"],
+            type="directory", source="/tmpl/path", description="A nice template",
+        )
+        with patch("builtins.input") as mock_input:
+            cmd_config_add_template(args)
+        mock_input.assert_not_called()
+        entry = load_config()["machines"]["local"]["templates"][0]
+        assert entry == {
+            "name": "newtmpl", "type": "directory", "path": "/tmpl/path",
+            "description": "A nice template", "params": {"KEY": "val"},
+        }
 
 
 class TestCmdConfigEditTemplate:
@@ -989,9 +1181,30 @@ class TestCmdConfigEditTemplate:
             }},
             "default_machine": "local",
         })
-        args = MagicMock(machine_name="local", template_name="tmpl", params=None)
+        args = Namespace(machine_name="local", template_name="tmpl", params=None)
         with patch("builtins.input", side_effect=["directory", "/new/path", "New description"]):
             cmd_config_edit_template(args)
+        entry = load_config()["machines"]["local"]["templates"][0]
+        assert entry["path"] == "/new/path"
+        assert entry["description"] == "New description"
+
+    def test_flags_only_never_prompts(self, tmp_config):
+        from colette_cli.utils.config import save_config, load_config
+        from colette_cli.config.commands import cmd_config_edit_template
+        save_config({
+            "machines": {"local": {
+                "type": "local", "projects_dir": "/p",
+                "templates": [{"name": "tmpl", "type": "directory", "path": "/old/path"}],
+            }},
+            "default_machine": "local",
+        })
+        args = Namespace(
+            machine_name="local", template_name="tmpl", params=None,
+            type="directory", source="/new/path", description="New description",
+        )
+        with patch("builtins.input") as mock_input:
+            cmd_config_edit_template(args)
+        mock_input.assert_not_called()
         entry = load_config()["machines"]["local"]["templates"][0]
         assert entry["path"] == "/new/path"
         assert entry["description"] == "New description"
@@ -1006,7 +1219,7 @@ class TestCmdConfigEditTemplate:
             }},
             "default_machine": "local",
         })
-        args = MagicMock(machine_name="local", template_name="tmpl", params=None)
+        args = Namespace(machine_name="local", template_name="tmpl", params=None)
         with patch("builtins.input", side_effect=["git", "https://example.com/repo.git", ""]):
             cmd_config_edit_template(args)
         entry = load_config()["machines"]["local"]["templates"][0]
@@ -1018,7 +1231,7 @@ class TestCmdConfigEditTemplate:
         from colette_cli.utils.config import save_config
         from colette_cli.config.commands import cmd_config_edit_template
         save_config(LOCAL_CFG)
-        args = MagicMock(machine_name="local", template_name="nope", params=None)
+        args = Namespace(machine_name="local", template_name="nope", params=None)
         with pytest.raises(SystemExit):
             cmd_config_edit_template(args)
 

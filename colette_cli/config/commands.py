@@ -24,9 +24,11 @@ from colette_cli.utils.config import (
     require_machine,
     save_config,
     scaffold_project_hook_files,
+    write_machine_template_hook,
+    write_project_hook,
 )
 from colette_cli.utils.formatting import bold, cyan, err, info, warn
-from colette_cli.utils.helpers import all_template_names, is_remote_machine, write_project_record
+from colette_cli.utils.helpers import all_template_names, is_remote_machine, prompt, write_project_record
 
 
 def _parse_params(raw_params):
@@ -41,7 +43,7 @@ def _parse_params(raw_params):
 
 
 def _prompt_template_type(default=None):
-    template_type = input(
+    template_type = prompt(
         f"Template type (directory/git) [{default or 'directory'}]: "
     ).strip()
     template_type = template_type or default or "directory"
@@ -53,7 +55,7 @@ def _prompt_template_type(default=None):
 def _prompt_template_source(template_type, current=None):
     label = "Template path" if template_type == "directory" else "Template git URL"
     suffix = f" [{current}]" if current else ""
-    source = input(f"{label}{suffix}: ").strip() or current
+    source = prompt(f"{label}{suffix}: ").strip() or current
     if not source:
         err("template source cannot be empty.")
     return source
@@ -139,9 +141,9 @@ def cmd_config_list_templates(args):
 
 
 def cmd_config_add_machine(args):
-    """Interactively add a new machine."""
+    """Add a new machine, prompting for any value not passed as a flag."""
     cfg = load_config()
-    name = input("Machine name: ").strip()
+    name = (getattr(args, "name", None) or prompt("Machine name: ")).strip()
     if not name:
         err("machine name cannot be empty.")
     if name in cfg.get("machines", {}):
@@ -153,37 +155,45 @@ def cmd_config_add_machine(args):
     if any(p["name"] == name for p in load_projects()):
         err(f"'{name}' is already used as a project name.")
 
-    mtype = input("Type (local/ssh) [local]: ").strip() or "local"
+    mtype = getattr(args, "type", None) or prompt("Type (local/ssh) [local]: ").strip() or "local"
     if mtype not in ("local", "ssh"):
         err("type must be 'local' or 'ssh'.")
 
     machine = {"type": mtype}
 
     if mtype == "ssh":
-        host = input("SSH host (user@hostname or SSH config alias): ").strip()
+        host = getattr(args, "host", None) or prompt("SSH host (user@hostname or SSH config alias): ").strip()
         if not host:
             err("SSH host cannot be empty.")
         machine["host"] = host
-        port = input("SSH port (leave empty for default 22): ").strip()
+        port = getattr(args, "port", None)
+        if port is None:
+            port_str = prompt("SSH port (leave empty for default 22): ").strip()
+            if port_str:
+                if not port_str.isdigit():
+                    err("SSH port must be a number.")
+                port = int(port_str)
         if port:
-            if not port.isdigit():
-                err("SSH port must be a number.")
-            machine["port"] = int(port)
-        key = input(
-            "Path to SSH private key (leave empty to use SSH default): "
-        ).strip()
+            machine["port"] = port
+        key = getattr(args, "key", None)
+        if key is None:
+            key = prompt("Path to SSH private key (leave empty to use SSH default): ").strip()
         if key:
             machine["ssh_key"] = str(Path(key).expanduser())
-        colette_path = input(
-            "Path to colette binary on this machine (leave empty to skip 'config sync'): "
-        ).strip()
+        colette_path = getattr(args, "colette_path", None)
+        if colette_path is None:
+            colette_path = prompt(
+                "Path to colette binary on this machine (leave empty to skip 'config sync'): "
+            ).strip()
         if colette_path:
             machine["colette_path"] = colette_path
 
-    template = input("Initial template name (optional, leave empty to skip): ").strip()
+    template = getattr(args, "template", None)
+    if template is None:
+        template = prompt("Initial template name (optional, leave empty to skip): ").strip()
     if template:
-        template_type = _prompt_template_type()
-        source = _prompt_template_source(template_type)
+        template_type = getattr(args, "template_type", None) or _prompt_template_type()
+        source = getattr(args, "template_source", None) or _prompt_template_source(template_type)
         if template_type == "directory":
             machine["templates"] = [
                 {"name": template, "type": "directory", "path": source}
@@ -191,7 +201,9 @@ def cmd_config_add_machine(args):
         else:
             machine["templates"] = [{"name": template, "type": "git", "url": source}]
 
-    projects_dir = input("Projects directory (on the target machine): ").strip()
+    projects_dir = getattr(args, "projects_dir", None)
+    if projects_dir is None:
+        projects_dir = prompt("Projects directory (on the target machine): ").strip()
     if not projects_dir:
         err("projects directory cannot be empty.")
     machine["projects_dir"] = projects_dir
@@ -201,8 +213,10 @@ def cmd_config_add_machine(args):
     if not cfg.get("default_machine"):
         cfg["default_machine"] = name
         info(f"Set '{name}' as the default machine.")
+    elif getattr(args, "default", False):
+        cfg["default_machine"] = name
     else:
-        ans = input(f"Set '{name}' as the default machine? [y/N]: ").strip().lower()
+        ans = prompt(f"Set '{name}' as the default machine? [y/N]: ").strip().lower()
         if ans == "y":
             cfg["default_machine"] = name
 
@@ -213,7 +227,7 @@ def cmd_config_add_machine(args):
 
 
 def cmd_config_edit_machine(args):
-    """Edit an existing machine interactively."""
+    """Edit an existing machine, prompting for any value not passed as a flag."""
     cfg = load_config()
     name = args.machine_name
     if name not in cfg.get("machines", {}):
@@ -222,29 +236,35 @@ def cmd_config_edit_machine(args):
     print(f"Editing machine '{name}'. Press Enter to keep current value.")
 
     cur_type = machine.get("type", "local")
-    mtype = input(f"Type (local/ssh) [{cur_type}]: ").strip() or cur_type
+    mtype = getattr(args, "type", None) or prompt(f"Type (local/ssh) [{cur_type}]: ").strip() or cur_type
     machine["type"] = mtype
 
     if mtype == "ssh":
         cur_host = machine.get("host", "")
-        host = input(f"SSH host [{cur_host}]: ").strip() or cur_host
+        host = getattr(args, "host", None) or prompt(f"SSH host [{cur_host}]: ").strip() or cur_host
         machine["host"] = host
         cur_port = machine.get("port", "")
-        port = input(f"SSH port [{cur_port or 'default 22'}]: ").strip()
+        port = getattr(args, "port", None)
+        if port is None:
+            port_str = prompt(f"SSH port [{cur_port or 'default 22'}]: ").strip()
+            if port_str:
+                if not port_str.isdigit():
+                    err("SSH port must be a number.")
+                port = int(port_str)
         if port:
-            if not port.isdigit():
-                err("SSH port must be a number.")
-            machine["port"] = int(port)
-        elif "port" in machine and not port:
-            pass  # keep existing port if user presses Enter
+            machine["port"] = port
         cur_key = machine.get("ssh_key", "")
-        key = input(f"SSH key path [{cur_key}] (leave empty to keep): ").strip()
+        key = getattr(args, "key", None)
+        if key is None:
+            key = prompt(f"SSH key path [{cur_key}] (leave empty to keep): ").strip()
         if key:
             machine["ssh_key"] = str(Path(key).expanduser())
         cur_cp = machine.get("colette_path", "")
-        colette_path = input(
-            f"Path to colette binary on this machine [{cur_cp}] (leave empty to keep): "
-        ).strip()
+        colette_path = getattr(args, "colette_path", None)
+        if colette_path is None:
+            colette_path = prompt(
+                f"Path to colette binary on this machine [{cur_cp}] (leave empty to keep): "
+            ).strip()
         if colette_path:
             machine["colette_path"] = colette_path
     else:
@@ -253,22 +273,26 @@ def cmd_config_edit_machine(args):
         machine.pop("colette_path", None)
 
     cur_pdir = machine.get("projects_dir", "")
-    pdir = input(f"Projects directory [{cur_pdir}]: ").strip() or cur_pdir
+    pdir = getattr(args, "projects_dir", None) or prompt(f"Projects directory [{cur_pdir}]: ").strip() or cur_pdir
     machine["projects_dir"] = pdir
 
     cur_agent = machine.get("agent_command", "")
-    agent_command = input(
-        f"Agent command [{cur_agent or DEFAULT_AGENT_COMMAND + ' (default)'}] (leave empty to keep): "
-    ).strip()
+    agent_command = getattr(args, "agent_command", None)
+    if agent_command is None:
+        agent_command = prompt(
+            f"Agent command [{cur_agent or DEFAULT_AGENT_COMMAND + ' (default)'}] (leave empty to keep): "
+        ).strip()
     if agent_command:
         machine["agent_command"] = agent_command
 
     cur_ide = machine.get("ide_command", "")
     default_ide = DEFAULT_IDE_COMMAND_REMOTE if mtype == "ssh" else DEFAULT_IDE_COMMAND_LOCAL
-    ide_command = input(
-        f"IDE command [{cur_ide or default_ide + ' (default)'}] (leave empty to keep, "
-        "supports {host}/{path} placeholders): "
-    ).strip()
+    ide_command = getattr(args, "ide_command", None)
+    if ide_command is None:
+        ide_command = prompt(
+            f"IDE command [{cur_ide or default_ide + ' (default)'}] (leave empty to keep, "
+            "supports {host}/{path} placeholders): "
+        ).strip()
     if ide_command:
         machine["ide_command"] = ide_command
 
@@ -282,10 +306,11 @@ def cmd_config_remove_machine(args):
     name = args.machine_name
     if name not in cfg.get("machines", {}):
         err(f"machine '{name}' not found.")
-    ans = input(f"Remove machine '{name}'? [y/N]: ").strip().lower()
-    if ans != "y":
-        print("Aborted.")
-        return
+    if not getattr(args, "yes", False):
+        ans = prompt(f"Remove machine '{name}'? [y/N]: ").strip().lower()
+        if ans != "y":
+            print("Aborted.")
+            return
     del cfg["machines"][name]
     if cfg.get("default_machine") == name:
         cfg["default_machine"] = next(iter(cfg.get("machines", {})), None)
@@ -369,7 +394,7 @@ def apply_add_template(cfg, machine_name, name, template_type, source, descripti
     """Validate and persist a new template on a machine, scaffold its hook
     files, and push to the remote if applicable.
 
-    Shared core for cmd_config_add_template (CLI, collects via input()) and
+    Shared core for cmd_config_add_template (CLI, collects via flags/prompt()) and
     the TUI's _add_template_interactive (collects via form()) — kept in one
     place so both stay in sync on validation and remote-push behavior.
     Returns the new template entry dict.
@@ -422,9 +447,11 @@ def cmd_config_add_template(args):
     if args.template_name in cfg.get("machines", {}):
         err(f"'{args.template_name}' is already used as a machine name.")
 
-    template_type = _prompt_template_type()
-    source = _prompt_template_source(template_type)
-    description = input("Description (optional): ").strip() or None
+    template_type = getattr(args, "type", None) or _prompt_template_type()
+    source = getattr(args, "source", None) or _prompt_template_source(template_type)
+    description = getattr(args, "description", None)
+    if description is None:
+        description = prompt("Description (optional): ").strip() or None
     params = _parse_params(getattr(args, "params", None) or [])
 
     apply_add_template(cfg, args.machine_name, args.template_name, template_type, source, description, params)
@@ -482,12 +509,14 @@ def cmd_config_edit_template(args):
         )
 
     current_type = template.get("type", "directory")
-    template_type = _prompt_template_type(current_type)
+    template_type = getattr(args, "type", None) or _prompt_template_type(current_type)
     current_source = template.get("path") or template.get("url")
-    source = _prompt_template_source(template_type, current_source)
+    source = getattr(args, "source", None) or _prompt_template_source(template_type, current_source)
 
     cur_desc = template.get("description") or ""
-    description = input(f"Description [{cur_desc}]: ").strip() or cur_desc or None
+    description = getattr(args, "description", None)
+    if description is None:
+        description = prompt(f"Description [{cur_desc}]: ").strip() or cur_desc or None
 
     raw_params = getattr(args, "params", None)
     params = _parse_params(raw_params) if raw_params is not None else template.get("params")
@@ -520,8 +549,29 @@ def cmd_config_set_template_params(cfg, machine_name, template_name, params):
     _push_template_if_remote(machine, machine_name, template_name)
 
 
+def _resolve_hook_content(args):
+    """Return new hook content from --content-file/stdin, or None to fall
+    back to opening nano interactively.
+
+    '--content-file -' and a non-tty stdin both read from stdin (the latter
+    lets content be piped in without the flag, e.g. `cmd | colette config
+    edit-hook tmpl onstart -m m`); nothing here changes when a human's
+    running this at a real terminal, so nano keeps working unchanged.
+    """
+    import sys
+
+    content_file = getattr(args, "content_file", None)
+    if content_file:
+        if content_file == "-":
+            return sys.stdin.read()
+        return Path(content_file).read_text()
+    if not sys.stdin.isatty():
+        return sys.stdin.read()
+    return None
+
+
 def cmd_config_edit_hook(args):
-    """Open a template hook script in nano for editing."""
+    """Set a template hook script's content: via --content-file/stdin, or nano."""
     import subprocess
 
     template_name = args.template_name
@@ -534,14 +584,19 @@ def cmd_config_edit_hook(args):
         err("--machine is required (or set a default machine with 'colette config set-default').")
     scaffold_template_hook_files(template_name, machine_name)
     hook_path = get_machine_template_hook_path(machine_name, template_name, hook_name)
-    subprocess.run(["nano", str(hook_path)])
+
+    content = _resolve_hook_content(args)
+    if content is not None:
+        write_machine_template_hook(machine_name, template_name, hook_name, content)
+    else:
+        subprocess.run(["nano", str(hook_path)])
 
     machine = get_machine(load_config(), machine_name)
     _push_template_if_remote(machine, machine_name, template_name)
 
 
 def cmd_config_edit_project_hook(args):
-    """Open a project-specific hook script in nano for editing."""
+    """Set a project-specific hook script's content: via --content-file/stdin, or nano."""
     import subprocess
 
     from colette_cli.project import require_project
@@ -551,7 +606,12 @@ def cmd_config_edit_project_hook(args):
     project = require_project(project_name)
     scaffold_project_hook_files(project_name)
     hook_path = get_project_hook_path(project_name, hook_name)
-    subprocess.run(["nano", str(hook_path)])
+
+    content = _resolve_hook_content(args)
+    if content is not None:
+        write_project_hook(project_name, hook_name, content)
+    else:
+        subprocess.run(["nano", str(hook_path)])
 
     machine = get_machine(load_config(), project.get("machine"))
     if is_remote_machine(machine):

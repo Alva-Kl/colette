@@ -1,6 +1,7 @@
 """Tests for colette_cli.project.commands."""
 
 import pytest
+from argparse import Namespace
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
@@ -74,10 +75,7 @@ class TestCmdLink:
         save_config(LOCAL_CFG)
         project_dir = tmp_path / "existing"
         project_dir.mkdir()
-        args = MagicMock()
-        args.path = str(project_dir)
-        args.machine = "local"
-        args.name = "my-project"
+        args = Namespace(path=str(project_dir), machine="local", name="my-project", template=None)
         cmd_link(args)
         projects = load_projects()
         assert any(p["name"] == "my-project" for p in projects)
@@ -88,10 +86,7 @@ class TestCmdLink:
         save_config(LOCAL_CFG)
         project_dir = tmp_path / "derived-name"
         project_dir.mkdir()
-        args = MagicMock()
-        args.path = str(project_dir)
-        args.machine = "local"
-        args.name = None
+        args = Namespace(path=str(project_dir), machine="local", name=None, template=None)
         cmd_link(args)
         projects = load_projects()
         assert any(p["name"] == "derived-name" for p in projects)
@@ -100,10 +95,7 @@ class TestCmdLink:
         from colette_cli.utils.config import save_config
         from colette_cli.project.commands import cmd_link
         save_config(LOCAL_CFG)
-        args = MagicMock()
-        args.path = "/nonexistent/path"
-        args.machine = "local"
-        args.name = "proj"
+        args = Namespace(path="/nonexistent/path", machine="local", name="proj", template=None)
         with pytest.raises(SystemExit):
             cmd_link(args)
 
@@ -114,10 +106,7 @@ class TestCmdLink:
         save_local_projects([make_project("existing")])
         project_dir = tmp_path / "existing"
         project_dir.mkdir()
-        args = MagicMock()
-        args.path = str(project_dir)
-        args.machine = "local"
-        args.name = "existing"
+        args = Namespace(path=str(project_dir), machine="local", name="existing", template=None)
         with pytest.raises(SystemExit):
             cmd_link(args)
 
@@ -127,10 +116,34 @@ class TestCmdLink:
         save_config(LOCAL_CFG)
         project_dir = tmp_path / "some-dir"
         project_dir.mkdir()
-        args = MagicMock()
-        args.path = str(project_dir)
-        args.machine = "local"
-        args.name = "Invalid_Name"
+        args = Namespace(path=str(project_dir), machine="local", name="Invalid_Name", template=None)
+        with pytest.raises(SystemExit):
+            cmd_link(args)
+
+    def test_link_with_template_attaches_it(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, load_projects
+        from colette_cli.project.commands import cmd_link
+        save_config({
+            "machines": {"local": {
+                "type": "local", "projects_dir": "/p",
+                "templates": [{"name": "tmpl", "type": "directory", "path": "/tmpl/path"}],
+            }},
+            "default_machine": "local",
+        })
+        project_dir = tmp_path / "existing"
+        project_dir.mkdir()
+        args = Namespace(path=str(project_dir), machine="local", name="my-project", template="tmpl")
+        cmd_link(args)
+        project = next(p for p in load_projects() if p["name"] == "my-project")
+        assert project["template"] == "tmpl"
+
+    def test_link_with_unknown_template_exits(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config
+        from colette_cli.project.commands import cmd_link
+        save_config(LOCAL_CFG)
+        project_dir = tmp_path / "existing"
+        project_dir.mkdir()
+        args = Namespace(path=str(project_dir), machine="local", name="my-project", template="nope")
         with pytest.raises(SystemExit):
             cmd_link(args)
 
@@ -141,8 +154,7 @@ class TestCmdUnlink:
         from colette_cli.project.commands import cmd_unlink
         save_config(LOCAL_CFG)
         save_local_projects([make_project("proj")])
-        args = MagicMock()
-        args.name = "proj"
+        args = Namespace(name="proj", yes=False)
         with patch("builtins.input", return_value="y"):
             cmd_unlink(args)
         assert load_projects() == []
@@ -152,8 +164,7 @@ class TestCmdUnlink:
         from colette_cli.project.commands import cmd_unlink
         save_config(LOCAL_CFG)
         save_local_projects([make_project("proj")])
-        args = MagicMock()
-        args.name = "proj"
+        args = Namespace(name="proj", yes=False)
         with patch("builtins.input", return_value="n"):
             cmd_unlink(args)
         assert len(load_projects()) == 1
@@ -165,18 +176,40 @@ class TestCmdUnlink:
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
         save_local_projects([make_project("proj", path=str(project_dir))])
-        args = MagicMock()
-        args.name = "proj"
+        args = Namespace(name="proj", yes=False)
         with patch("builtins.input", return_value="y"):
             cmd_unlink(args)
         assert project_dir.exists()
 
     def test_unlink_fails_on_missing_project(self, tmp_config):
         from colette_cli.project.commands import cmd_unlink
-        args = MagicMock()
-        args.name = "missing"
+        args = Namespace(name="missing", yes=False)
         with pytest.raises(SystemExit):
             cmd_unlink(args)
+
+    def test_yes_flag_skips_confirmation(self, tmp_config):
+        from colette_cli.utils.config import save_config, save_local_projects, load_projects
+        from colette_cli.project.commands import cmd_unlink
+        save_config(LOCAL_CFG)
+        save_local_projects([make_project("proj")])
+        args = Namespace(name="proj", yes=True)
+        with patch("builtins.input") as mock_input:
+            cmd_unlink(args)
+        mock_input.assert_not_called()
+        assert load_projects() == []
+
+    def test_non_interactive_without_yes_aborts_without_crashing(self, tmp_config, monkeypatch):
+        """Without --yes and without a real terminal, this must abort safely
+        (never delete without explicit confirmation) instead of raising
+        EOFError."""
+        from colette_cli.utils.config import save_config, save_local_projects, load_projects
+        from colette_cli.project.commands import cmd_unlink
+        save_config(LOCAL_CFG)
+        save_local_projects([make_project("proj")])
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        args = Namespace(name="proj", yes=False)
+        cmd_unlink(args)
+        assert len(load_projects()) == 1
 
 
 class TestCmdDelete:
@@ -187,8 +220,7 @@ class TestCmdDelete:
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
         save_local_projects([make_project("proj", path=str(project_dir))])
-        args = MagicMock()
-        args.name = "proj"
+        args = Namespace(name="proj", yes=False)
         with patch("builtins.input", return_value="proj"):
             cmd_delete(args)
         assert not project_dir.exists()
@@ -201,8 +233,7 @@ class TestCmdDelete:
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
         save_local_projects([make_project("proj", path=str(project_dir))])
-        args = MagicMock()
-        args.name = "proj"
+        args = Namespace(name="proj", yes=False)
         with patch("builtins.input", return_value="wrong"):
             cmd_delete(args)
         assert project_dir.exists()
@@ -215,13 +246,42 @@ class TestCmdDelete:
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
         save_local_projects([make_project("proj", path=str(project_dir))])
-        args = MagicMock()
-        args.name = "proj"
+        args = Namespace(name="proj", yes=False)
         with patch("builtins.input") as mock_input:
             cmd_delete(args, skip_confirmation=True)
         mock_input.assert_not_called()
         assert not project_dir.exists()
         assert load_projects() == []
+
+    def test_yes_flag_skips_confirmation(self, tmp_config, tmp_path):
+        from colette_cli.utils.config import save_config, save_local_projects, load_projects
+        from colette_cli.project.commands import cmd_delete
+        save_config(LOCAL_CFG)
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        save_local_projects([make_project("proj", path=str(project_dir))])
+        args = Namespace(name="proj", yes=True)
+        with patch("builtins.input") as mock_input:
+            cmd_delete(args)
+        mock_input.assert_not_called()
+        assert not project_dir.exists()
+        assert load_projects() == []
+
+    def test_non_interactive_without_yes_aborts_without_crashing(self, tmp_config, tmp_path, monkeypatch):
+        """Without --yes and without a real terminal, this must abort safely
+        (never delete without explicit confirmation) instead of raising
+        EOFError."""
+        from colette_cli.utils.config import save_config, save_local_projects, load_projects
+        from colette_cli.project.commands import cmd_delete
+        save_config(LOCAL_CFG)
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        save_local_projects([make_project("proj", path=str(project_dir))])
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        args = Namespace(name="proj", yes=False)
+        cmd_delete(args)
+        assert project_dir.exists()
+        assert len(load_projects()) == 1
 
     def test_ondelete_hook_runs_before_delete(self, tmp_config, tmp_path):
         """The ondelete hook executes before project files are removed."""
@@ -351,7 +411,8 @@ class TestCmdCreate:
         mkdir_ok = MagicMock(stdout="", returncode=0)
 
         with patch("colette_cli.project.commands.ssh_run", side_effect=[no_exists, mkdir_ok]) as mock_ssh, \
-             patch("colette_cli.project.commands.write_project_record") as mock_write:
+             patch("colette_cli.project.commands.write_project_record") as mock_write, \
+             patch("colette_cli.utils.ssh.ssh_read_hook_files", return_value={}):
             cmd_create(args)
 
         calls = [c[0][1] for c in mock_ssh.call_args_list]
@@ -676,7 +737,8 @@ class TestCmdAttach:
         args = MagicMock()
         args.name = "my-project"
 
-        with patch("colette_cli.project.commands.ssh_interactive") as mock_ssh:
+        with patch("colette_cli.project.commands.ssh_interactive") as mock_ssh, \
+             patch("colette_cli.utils.ssh.ssh_read_hook_files", return_value={}):
             cmd_attach(args)
 
         mock_ssh.assert_called_once()

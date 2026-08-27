@@ -105,7 +105,7 @@ Without an action, prints a summary of the current configuration.
 |---|---|
 | `list` | List all configured machines |
 | `list-templates [machine]` | List templates for a machine |
-| `add-machine` | Interactively add a machine |
+| `add-machine [name]` | Add a machine (prompts for any value not passed as a flag) |
 | `edit-machine <machine>` | Edit a machine |
 | `add-template <machine> <template>` | Add a template to a machine |
 | `edit-template <machine> <template>` | Edit a template |
@@ -138,50 +138,72 @@ colette config list-templates my-server
 
 #### `colette config add-machine`
 
-Interactively add a machine (local or SSH).
+Add a machine (local or SSH). Any value not passed as a flag is prompted for
+interactively, so this works both as `colette config add-machine` (fully
+interactive) and fully non-interactively for scripts/agents.
 
 ```bash
 colette config add-machine
 # Prompts: name, type (local/ssh), SSH host/port/key (if ssh), projects_dir, initial template
+
+colette config add-machine my-server --type ssh --host user@host --port 2222 \
+  --key ~/.ssh/id_ed25519 --colette-path ~/.local/bin/colette \
+  --projects-dir /home/user/projects --default
 ```
+
+Flags: `--type/-t {local,ssh}`, `--host`, `--port`, `--key`, `--colette-path`,
+`--projects-dir`, `--template` (initial template name), `--template-type
+{directory,git}`, `--template-source` (path or git URL, used with
+`--template`), `--default` (set as the default machine).
 
 #### `colette config edit-machine <machine>`
 
-Interactively edit an existing machine's settings, including its
-`agent_command` and `ide_command` (see [`colette agent`](#colette-agent--open-in-your-configured-agent)
+Edit an existing machine's settings, including its `agent_command` and
+`ide_command` (see [`colette agent`](#colette-agent--open-in-your-configured-agent)
 and [`colette ide`](#colette-ide--open-in-your-configured-ide)). Both are
 free text with no validation. `ide_command` may use `{host}`/`{path}`
 placeholders — if no `{path}` placeholder is present, the project path is
-appended as a trailing argument. Leave either prompt empty to keep the
-current value (or the built-in default: `copilot --resume` for
-`agent_command`; `code` locally / `code --folder-uri
-vscode-remote://ssh-remote+{host}{path}` remotely for `ide_command`).
+appended as a trailing argument. Any value not passed as a flag is prompted
+for (leave the prompt empty to keep the current value, or the built-in
+default: `copilot --resume` for `agent_command`; `code` locally / `code
+--folder-uri vscode-remote://ssh-remote+{host}{path}` remotely for
+`ide_command`).
 
 ```bash
 colette config edit-machine my-server
+colette config edit-machine my-server --agent-command "claude --resume" --ide-command "zed --wait"
 ```
+
+Flags: `--type {local,ssh}`, `--host`, `--port`, `--key`, `--colette-path`,
+`--projects-dir`, `--agent-command`, `--ide-command`.
 
 #### `colette config add-template <machine> <template>`
 
 Add a template (directory or git) to a machine and scaffold its hook files.
+`--type`/`-t`, `--source`, and `--description` are prompted for if omitted.
 
 ```bash
 colette config add-template local my-template
 colette config add-template local my-template --param ENV=dev --param PORT=8080
+colette config add-template local my-template -t directory --source /path/to/template --description "..."
 ```
 
 #### `colette config edit-template <machine> <template>`
 
-Edit a template's source, description, and parameters.
+Edit a template's source, description, and parameters. `--type`/`-t`,
+`--source`, and `--description` are prompted for if omitted (falling back to
+the current value, not a re-prompt, same as `--param`).
 
 ```bash
 colette config edit-template local my-template --param ENV=prod
+colette config edit-template local my-template -t git --source https://example.com/repo.git
 ```
 
 #### `colette config edit-hook <template> <hook>`
 
-Open a template hook script in `nano` for editing. The hook file is created if
-it does not exist yet.
+Set a template hook script's content: via `nano` interactively, or
+non-interactively with `--content-file` (or by piping content into stdin).
+The hook file is created if it does not exist yet.
 
 ```bash
 colette config edit-hook my-template oncreate
@@ -189,6 +211,9 @@ colette config edit-hook my-template onstart
 colette config edit-hook my-template onlogs
 colette config edit-hook my-template onupdate
 colette config edit-hook my-template coletterc
+
+colette config edit-hook my-template onstart --content-file ./onstart.sh
+echo '#!/usr/bin/env bash' | colette config edit-hook my-template onstart
 ```
 
 Use `--machine` / `-m` to edit a **machine-specific** hook override instead of
@@ -203,13 +228,16 @@ Valid hook names: `oncreate`, `onstart`, `onstop`, `onlogs`, `onupdate`, `ondele
 
 #### `colette config edit-project-hook <project> <hook>`
 
-Open a project-specific hook override script in `nano` for editing. Scaffolds
-the project's hook directory under `~/.config/colette/projects/<project>/` if
-needed. The project must already be registered with colette.
+Set a project-specific hook override script's content: via `nano`
+interactively, or non-interactively with `--content-file` (or piped stdin).
+Scaffolds the project's hook directory under
+`~/.config/colette/projects/<project>/` if needed. The project must already
+be registered with colette.
 
 ```bash
 colette config edit-project-hook my-project onstart
 colette config edit-project-hook my-project onlogs
+colette config edit-project-hook my-project onstart --content-file ./onstart.sh
 ```
 
 Valid hook names: `oncreate`, `onstart`, `onstop`, `onlogs`, `onupdate`, `ondelete`, `coletterc`.
@@ -290,10 +318,12 @@ colette config remove-template local my-template
 
 #### `colette config remove-machine <machine>`
 
-Remove a machine from the configuration.
+Remove a machine from the configuration. Asks for confirmation unless
+`--yes`/`-y` is passed.
 
 ```bash
 colette config remove-machine old-server
+colette config remove-machine old-server --yes
 ```
 
 #### `colette config set-default <machine>`
@@ -325,14 +355,19 @@ colette create my-project -m local -t my-template
 ### `colette link` — link an existing directory
 
 ```
-colette link <path> [-m <machine>] [-n <name>]
+colette link <path> [-m <machine>] [-n <name>] [-t <template>]
 ```
 
-Register an existing directory as a project without copying any template.
+Register an existing directory as a project, optionally attaching an
+existing template (`-t`/`--template`) so the project gets that template's
+`onstart`/`onstop`/`onupdate`/... hooks going forward. No template is
+attached by default, and attaching one never runs `oncreate` — the directory
+already exists outside colette's own creation flow.
 
 ```bash
 colette link /home/user/existing-project
 colette link /home/user/existing-project -m local -n my-project
+colette link /home/user/existing-project -m local -t my-template
 ```
 
 ---
@@ -340,16 +375,17 @@ colette link /home/user/existing-project -m local -n my-project
 ### `colette unlink` — remove a project from colette
 
 ```
-colette unlink <name>
+colette unlink <name> [--yes/-y]
 ```
 
 Removes the project from colette's registry **without deleting any files**. Use
 this when you want to stop managing a project with colette while keeping all the
 files on disk. For full deletion of both the record and the files, use
-`colette delete`.
+`colette delete`. Asks for confirmation unless `--yes`/`-y` is passed.
 
 ```bash
 colette unlink my-project
+colette unlink my-project --yes
 ```
 
 ---
@@ -357,14 +393,16 @@ colette unlink my-project
 ### `colette delete` — delete a project
 
 ```
-colette delete <name>
+colette delete <name> [--yes/-y]
 ```
 
 Removes the project directory and its registration. Asks for confirmation by
-requiring the project name to be typed.
+requiring the project name to be typed, unless `--yes`/`-y` is passed (which
+skips confirmation entirely — there's no name re-entry to bypass).
 
 ```bash
 colette delete my-project
+colette delete my-project --yes
 ```
 
 ---

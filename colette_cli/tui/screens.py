@@ -611,6 +611,11 @@ def _link_directory_interactive():
     machines = list(cfg.get("machines", {}).keys())
     default_machine = cfg.get("default_machine", "")
 
+    def _template_choices(v):
+        machine_name = v.get("machine") or default_machine
+        machine_cfg = cfg.get("machines", {}).get(machine_name, {})
+        return ["(none)"] + list_creatable_template_names(machine_cfg, machine_name)
+
     fields = [
         FormField(
             name="path", label="Directory path",
@@ -618,15 +623,18 @@ def _link_directory_interactive():
         ),
         FormField(name="machine", label="Machine", kind="choice", choices=machines, default=default_machine),
         FormField(name="name", label="Project name (empty = directory name)"),
+        FormField(name="template", label="Template", kind="choice", choices=_template_choices, default="(none)"),
     ]
     values = form(fields, title="Link project")
     if values is None:
         return
 
+    template = values["template"] if values["template"] != "(none)" else None
     _popup(cmd_link)(Namespace(
         path=values["path"].strip(),
         machine=values["machine"],
         name=values["name"].strip() or None,
+        template=template,
     ))
 
 

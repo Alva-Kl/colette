@@ -1,7 +1,21 @@
 """Utility functions for project grouping and filtering."""
 
 import shlex
+import sys
 from pathlib import Path
+
+
+def prompt(prompt_text):
+    """input() that returns '' instead of blocking/crashing when stdin isn't
+    a real terminal (e.g. driven by a script or agent), rather than raising
+    EOFError. Every caller already treats a blank answer as "skip this
+    optional value", "keep the current value", or "decline this
+    confirmation", so a non-interactive caller gets that same safe default
+    for anything it didn't pass as a flag, instead of a crash.
+    """
+    if not sys.stdin.isatty():
+        return ""
+    return input(prompt_text)
 
 
 def build_projects_by_machine(projects, filter_machine=None):

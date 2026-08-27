@@ -1,7 +1,36 @@
 """Shared fixtures for the Colette test suite."""
 
 import json
+import subprocess
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def block_real_ssh_subprocess(monkeypatch):
+    """Fail fast and loud on any unmocked real `ssh` subprocess call.
+
+    Every module calls it as `subprocess.run(...)` after a plain `import
+    subprocess`, so patching the shared attribute covers every call site.
+    A test that legitimately exercises ssh.py/tmux.py's own subprocess calls
+    patches `subprocess.run` (or a higher-level function) itself — that local
+    patch wins for the duration of its `with` block, then this guard resumes.
+
+    Without this, a missing mock doesn't fail — it just silently blocks for
+    up to the OS's default TCP connect timeout (~130s on Linux) trying to
+    reach a fake host, which is how the suite quietly grew to ~5 minutes.
+    """
+    real_run = subprocess.run
+
+    def guarded_run(args, *a, **kw):
+        if isinstance(args, (list, tuple)) and args and args[0] == "ssh":
+            raise AssertionError(
+                f"real `ssh` subprocess call attempted in a test: {args!r} — "
+                "mock the relevant colette_cli.utils.ssh/tmux function instead."
+            )
+        return real_run(args, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", guarded_run)
 
 
 @pytest.fixture(autouse=True)
@@ -9,6 +38,19 @@ def suppress_notifications(monkeypatch):
     """Suppress real desktop notifications during every test."""
     noop = lambda *a, **kw: None
     monkeypatch.setattr("colette_cli.utils.notify.send_notification", noop)
+
+
+@pytest.fixture(autouse=True)
+def interactive_stdin(monkeypatch):
+    """Make colette_cli.utils.helpers.prompt() behave like plain input() by
+    default, since pytest's captured stdin isn't a real terminal.
+
+    prompt() falls back to '' (skip/keep-default) instead of calling input()
+    when stdin isn't a tty, so a script/agent invocation that omits a value
+    degrades gracefully instead of raising EOFError. Tests exercising that
+    non-interactive behavior explicitly re-patch isatty() to False.
+    """
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
 
 
 @pytest.fixture(autouse=True)

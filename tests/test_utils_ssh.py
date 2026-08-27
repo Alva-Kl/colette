@@ -241,7 +241,9 @@ class TestSshRun:
         ok = MagicMock(returncode=0)
         with patch("subprocess.run", return_value=ok) as mock_run:
             ssh_run(machine, "echo hi")
-        assert mock_run.call_args.args[0] == ["ssh", "user@host", "echo hi"]
+        assert mock_run.call_args.args[0] == [
+            "ssh", "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", "user@host", "echo hi",
+        ]
         assert mock_run.call_args.kwargs["stdin"] is not None
 
     def test_includes_key_and_port(self):
@@ -251,7 +253,10 @@ class TestSshRun:
         with patch("subprocess.run", return_value=ok) as mock_run:
             ssh_run(machine, "echo hi")
         cmd = mock_run.call_args.args[0]
-        assert cmd == ["ssh", "-i", "/k", "-p", "24", "user@host", "echo hi"]
+        assert cmd == [
+            "ssh", "-o", "ConnectTimeout=15", "-i", "/k", "-p", "24",
+            "-o", "BatchMode=yes", "user@host", "echo hi",
+        ]
 
     def test_extra_opts_inserted_before_host(self):
         from colette_cli.utils.ssh import ssh_run
@@ -260,7 +265,17 @@ class TestSshRun:
         with patch("subprocess.run", return_value=ok) as mock_run:
             ssh_run(machine, "echo hi", extra_opts=["-o", "BatchMode=yes"])
         cmd = mock_run.call_args.args[0]
-        assert cmd == ["ssh", "-o", "BatchMode=yes", "user@host", "echo hi"]
+        assert cmd == ["ssh", "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", "user@host", "echo hi"]
+
+    def test_default_extra_opts_can_be_overridden(self):
+        """Passing extra_opts=[] (not None) opts out of the default BatchMode."""
+        from colette_cli.utils.ssh import ssh_run
+        machine = {"type": "ssh", "host": "user@host"}
+        ok = MagicMock(returncode=0)
+        with patch("subprocess.run", return_value=ok) as mock_run:
+            ssh_run(machine, "echo hi", extra_opts=[])
+        cmd = mock_run.call_args.args[0]
+        assert cmd == ["ssh", "-o", "ConnectTimeout=15", "user@host", "echo hi"]
 
 
 class TestFetchSelfReport:
@@ -311,7 +326,9 @@ class TestSshInteractive:
         machine = {"type": "ssh", "host": "user@host"}
         with patch("subprocess.run") as mock_run:
             ssh_interactive(machine, "bash -l")
-        mock_run.assert_called_once_with(["ssh", "-t", "user@host", "bash -l"])
+        mock_run.assert_called_once_with(
+            ["ssh", "-t", "-o", "ConnectTimeout=15", "user@host", "bash -l"]
+        )
 
     def test_disables_and_restores_local_tmux_mouse(self, monkeypatch):
         from colette_cli.utils.ssh import ssh_interactive
@@ -322,7 +339,17 @@ class TestSshInteractive:
         calls = [c.args[0] for c in mock_run.call_args_list]
         assert ["tmux", "set-window-option", "mouse", "off"] in calls
         assert ["tmux", "set-window-option", "-u", "mouse"] in calls
-        assert ["ssh", "-t", "user@host", "bash -l"] in calls
+        assert ["ssh", "-t", "-o", "ConnectTimeout=15", "user@host", "bash -l"] in calls
+
+    def test_no_batch_mode(self, monkeypatch):
+        """ssh_interactive must never pass BatchMode=yes — it may rely on
+        password auth, unlike every other (non-interactive) ssh call here."""
+        from colette_cli.utils.ssh import ssh_interactive
+        monkeypatch.delenv("TMUX", raising=False)
+        machine = {"type": "ssh", "host": "user@host"}
+        with patch("subprocess.run") as mock_run:
+            ssh_interactive(machine, "bash -l")
+        assert "BatchMode=yes" not in mock_run.call_args.args[0]
 
 
 class TestSshWriteAndMkdir:
@@ -360,6 +387,16 @@ class TestSshWriteAndMkdir:
         with patch("colette_cli.utils.ssh.ssh_run", return_value=fail):
             result = _ssh_mkdir(machine, "/remote/dir")
         assert result is False
+
+
+class TestRealSshSubprocessGuard:
+    def test_unmocked_real_ssh_call_raises_immediately(self):
+        """Sanity-checks the autouse conftest guard: any test that forgets to
+        mock subprocess.run/the relevant ssh.py function fails instantly
+        instead of silently hanging on a real connection attempt."""
+        import subprocess
+        with pytest.raises(AssertionError, match="real `ssh` subprocess call"):
+            subprocess.run(["ssh", "somehost", "echo hi"])
 
 
 class TestSshReadHookFiles:

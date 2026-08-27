@@ -29,6 +29,7 @@ from colette_cli.utils.helpers import (
     delete_project_record,
     find_template_as_project,
     is_remote_machine,
+    prompt,
     resolve_ide_command,
     write_project_record,
 )
@@ -97,7 +98,7 @@ def cmd_create(args):
         print(f"Available templates for '{machine_name}' (leave blank to create an empty project):")
         for template_option in template_names:
             print(f"  - {template_option}")
-        template_name = input("Template name: ").strip() or None
+        template_name = prompt("Template name: ").strip() or None
         if template_name and template_name not in template_names:
             err(
                 f"template '{template_name}' is not available on machine '{machine_name}'."
@@ -195,8 +196,8 @@ def cmd_delete(args, skip_confirmation: bool = False):
     if _is_template_proxy(project):
         err(f"'{name}' is a template, not a project. Use 'colette config remove-template' to remove it.")
 
-    if not skip_confirmation:
-        answer = input(
+    if not (skip_confirmation or getattr(args, "yes", False)):
+        answer = prompt(
             f"Delete project '{name}' at '{project['path']}' on '{project['machine']}'?\n"
             f"This {red('cannot be undone')}. Type the project name to confirm: "
         ).strip()
@@ -375,8 +376,8 @@ def cmd_unlink(args, skip_confirmation: bool = False):
     if _is_template_proxy(project):
         err(f"'{name}' is a template, not a project. Use 'colette config remove-template' to remove it.")
 
-    if not skip_confirmation:
-        answer = input(
+    if not (skip_confirmation or getattr(args, "yes", False)):
+        answer = prompt(
             f"Unlink project '{name}' (path '{project['path']}' on '{project['machine']}' will NOT be deleted)? [y/N]: "
         ).strip().lower()
         if answer != "y":
@@ -470,11 +471,20 @@ def cmd_link(args):
             err(f"path '{path}' does not exist.")
         path = str(resolved)
 
+    template_name = getattr(args, "template", None)
+    if template_name:
+        template_names = list_creatable_template_names(machine, machine_name)
+        if template_name not in template_names:
+            err(
+                f"template '{template_name}' is not available on machine '{machine_name}'. "
+                f"Available templates: {', '.join(template_names)}"
+            )
+
     project = {
         "name": name,
         "machine": machine_name,
         "path": path,
-        "template": None,
+        "template": template_name,
     }
     write_project_record(machine, machine_name, project)
     info(f"Project '{name}' linked from '{path}' on machine '{machine_name}'.")

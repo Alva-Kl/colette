@@ -5,15 +5,19 @@ import os
 import shlex
 import subprocess
 
-# Extra SSH options used only for non-interactive automated calls:
-# - BatchMode=yes  — fail immediately instead of prompting for passwords
-# - ConnectTimeout — prevent background threads from hanging on unreachable hosts
-_SYNC_SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=30"]
+# ConnectTimeout applies to every real SSH invocation (interactive or not) so
+# an unreachable host fails in ~15s instead of the OS default (~130s on Linux).
+_SSH_CONNECT_TIMEOUT_OPTS = ["-o", "ConnectTimeout=15"]
+
+# BatchMode additionally applies only to non-interactive automated calls —
+# fail immediately instead of hanging on a password prompt. Never applied to
+# ssh_interactive, which may legitimately rely on password auth.
+_SSH_BATCH_MODE_OPTS = ["-o", "BatchMode=yes"]
 
 
 def _ssh_base_args(machine):
     """Build base SSH arguments from machine config."""
-    args = ["ssh"]
+    args = ["ssh"] + _SSH_CONNECT_TIMEOUT_OPTS
     if "ssh_key" in machine:
         args += ["-i", machine["ssh_key"]]
     if "port" in machine:
@@ -41,8 +45,12 @@ def ssh_run(machine, remote_cmd, extra_opts=None):
 
     *extra_opts* is an optional list of SSH option flags (e.g. ``["-o",
     "BatchMode=yes"]``) inserted between the connection flags and the hostname.
+    Defaults to ``_SSH_BATCH_MODE_OPTS`` — every caller here is a non-interactive
+    automated command, so hanging on a password prompt is never wanted.
     """
     base = _ssh_base_args(machine)
+    if extra_opts is None:
+        extra_opts = _SSH_BATCH_MODE_OPTS
     if extra_opts:
         args = base[:-1] + extra_opts + [base[-1], remote_cmd]
     else:
@@ -90,8 +98,10 @@ _REMOTE_CONFIG_BASE = "$HOME/.config/colette"
 
 def _ssh_write(machine, remote_path, content_bytes):
     """Write *content_bytes* to a path on a remote machine via SSH. Returns True on success."""
+    base = _ssh_base_args(machine)
+    args = base[:-1] + _SSH_BATCH_MODE_OPTS + [base[-1], f"cat > {remote_path}"]
     result = subprocess.run(
-        _ssh_base_args(machine) + [f"cat > {remote_path}"],
+        args,
         input=content_bytes,
         capture_output=True,
     )
@@ -311,7 +321,6 @@ def fetch_self_report(machine, machine_name):
     result = ssh_run(
         machine,
         f"{shlex.quote(remote_path)} debug self-report {shlex.quote(projects_dir)}",
-        extra_opts=_SYNC_SSH_OPTS,
     )
     if result.returncode != 0:
         return None

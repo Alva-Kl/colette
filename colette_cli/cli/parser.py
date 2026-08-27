@@ -46,9 +46,57 @@ def build_parser():
         nargs="?",
         help="Machine name (default: configured default machine)",
     )
-    csub.add_parser("add-machine", help="Interactively add a machine")
-    emp = csub.add_parser("edit-machine", help="Interactively edit a machine")
+    amp = csub.add_parser(
+        "add-machine", help="Add a machine (prompts for any value not passed as a flag)"
+    )
+    amp.add_argument("name", nargs="?", default=None, help="Machine name (prompted if omitted)")
+    amp.add_argument(
+        "--type", "-t", choices=["local", "ssh"], help="Machine type (prompted if omitted)"
+    )
+    amp.add_argument("--host", help="SSH host: user@hostname or SSH config alias (ssh only)")
+    amp.add_argument("--port", type=int, metavar="PORT", help="SSH port (ssh only; default 22)")
+    amp.add_argument("--key", help="Path to SSH private key (ssh only)")
+    amp.add_argument(
+        "--colette-path",
+        dest="colette_path",
+        help="Path to colette binary on the machine (ssh only; enables 'config sync')",
+    )
+    amp.add_argument(
+        "--projects-dir",
+        dest="projects_dir",
+        help="Projects directory on the target machine (prompted if omitted)",
+    )
+    amp.add_argument("--template", help="Initial template name (optional)")
+    amp.add_argument(
+        "--template-type",
+        dest="template_type",
+        choices=["directory", "git"],
+        help="Initial template's type (used with --template)",
+    )
+    amp.add_argument(
+        "--template-source",
+        dest="template_source",
+        help="Initial template's path or git URL (used with --template)",
+    )
+    amp.add_argument(
+        "--default",
+        action="store_true",
+        default=False,
+        help="Set as the default machine",
+    )
+
+    emp = csub.add_parser("edit-machine", help="Edit a machine (prompts for any value not passed as a flag)")
     emp.add_argument("machine_name", help="Machine name")
+    emp.add_argument("--type", choices=["local", "ssh"], help="Machine type")
+    emp.add_argument("--host", help="SSH host: user@hostname or SSH config alias (ssh only)")
+    emp.add_argument("--port", type=int, metavar="PORT", help="SSH port (ssh only)")
+    emp.add_argument("--key", help="Path to SSH private key (ssh only)")
+    emp.add_argument(
+        "--colette-path", dest="colette_path", help="Path to colette binary on the machine (ssh only)"
+    )
+    emp.add_argument("--projects-dir", dest="projects_dir", help="Projects directory on the target machine")
+    emp.add_argument("--agent-command", dest="agent_command", help="Command used to open the agent session")
+    emp.add_argument("--ide-command", dest="ide_command", help="Command used to open the IDE")
     atp = csub.add_parser("add-template", help="Add a template to a machine")
     atp.add_argument("machine_name", help="Machine name")
     atp.add_argument("template_name", help="Template name")
@@ -59,6 +107,9 @@ def build_parser():
         dest="params",
         help="Template parameter passed as COLETTE_PARAM_<KEY> to hooks (repeatable)",
     )
+    atp.add_argument("--type", "-t", choices=["directory", "git"], help="Template type")
+    atp.add_argument("--source", help="Template path (directory type) or git URL (git type)")
+    atp.add_argument("--description", help="Template description")
     etp = csub.add_parser("edit-template", help="Edit a template on a machine")
     etp.add_argument("machine_name", help="Machine name")
     etp.add_argument("template_name", help="Template name")
@@ -69,7 +120,12 @@ def build_parser():
         dest="params",
         help="Replace template parameters (repeatable; omit to keep existing params)",
     )
-    ehp = csub.add_parser("edit-hook", help="Edit a template hook script with nano")
+    etp.add_argument("--type", "-t", choices=["directory", "git"], help="Template type")
+    etp.add_argument("--source", help="Template path (directory type) or git URL (git type)")
+    etp.add_argument("--description", help="Template description")
+    ehp = csub.add_parser(
+        "edit-hook", help="Edit a template hook script (nano, or non-interactively via --content-file/stdin)"
+    )
     ehp.add_argument("template_name", help="Template name")
     ehp.add_argument(
         "hook_name",
@@ -83,14 +139,27 @@ def build_parser():
         metavar="MACHINE",
         help="Edit the machine-specific hook instead of the shared hook",
     )
+    ehp.add_argument(
+        "--content-file",
+        dest="content_file",
+        metavar="PATH",
+        help="Set hook content from this file instead of opening nano (use '-' for stdin)",
+    )
     ephp = csub.add_parser(
-        "edit-project-hook", help="Edit a project-specific hook script with nano"
+        "edit-project-hook",
+        help="Edit a project-specific hook script (nano, or non-interactively via --content-file/stdin)",
     )
     ephp.add_argument("project_name", help="Project name")
     ephp.add_argument(
         "hook_name",
         choices=["oncreate", "onstart", "onstop", "onlogs", "onupdate", "ondelete", "coletterc"],
         help="Hook to edit",
+    )
+    ephp.add_argument(
+        "--content-file",
+        dest="content_file",
+        metavar="PATH",
+        help="Set hook content from this file instead of opening nano (use '-' for stdin)",
     )
     rtup = csub.add_parser(
         "run-template-update",
@@ -115,6 +184,9 @@ def build_parser():
     rtp.add_argument("template_name", help="Template name")
     rmp = csub.add_parser("remove-machine", help="Remove a machine from config")
     rmp.add_argument("machine_name", help="Machine name")
+    rmp.add_argument(
+        "--yes", "-y", action="store_true", default=False, help="Skip the confirmation prompt"
+    )
     sdp = csub.add_parser("set-default", help="Set the default machine")
     sdp.add_argument("machine_name", help="Machine name")
     srp = csub.add_parser(
@@ -165,11 +237,17 @@ def build_parser():
 
     dp = sub.add_parser("delete", help="Delete a project and its files")
     dp.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
+    dp.add_argument(
+        "--yes", "-y", action="store_true", default=False, help="Skip the confirmation prompt"
+    )
 
     ulp = sub.add_parser(
         "unlink", help="Remove a project from colette without deleting its files"
     )
     ulp.add_argument("name", nargs="?", default=None, help="Project name (default: detected from current directory)")
+    ulp.add_argument(
+        "--yes", "-y", action="store_true", default=False, help="Skip the confirmation prompt"
+    )
 
     sub.add_parser("list", help="List all projects grouped by machine")
 
@@ -188,6 +266,12 @@ def build_parser():
         "-n",
         metavar="NAME",
         help="Project name (default: directory basename)",
+    )
+    lnp.add_argument(
+        "--template",
+        "-t",
+        metavar="TEMPLATE",
+        help="Attach an existing template to this directory (default: none)",
     )
 
     atp = sub.add_parser("attach", help="Attach to or create a tmux session for a project or a machine")

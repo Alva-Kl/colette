@@ -364,7 +364,7 @@ class TestProjectListItems:
         project_dir.mkdir()
         with patch("colette_cli.project.cmd_link") as mock_link, \
              patch("colette_cli.tui.forms.form",
-                   return_value={"path": str(project_dir), "machine": "local", "name": ""}):
+                   return_value={"path": str(project_dir), "machine": "local", "name": "", "template": "(none)"}):
             from colette_cli.tui.screens import project_list_items
             items = project_list_items()
             next(i for i in items if i.label == "Link project").run()
@@ -373,6 +373,7 @@ class TestProjectListItems:
         assert args.path == str(project_dir)
         assert args.machine == "local"
         assert args.name is None
+        assert args.template is None
 
     def test_link_project_aborts_on_form_cancel(self, tmp_config):
         from colette_cli.utils.config import save_config
@@ -1820,7 +1821,8 @@ class TestTemplateParamItemsMachineSpecific:
         items = template_param_items("dev", "remote")
         port_item = next(i for i in items if i.label == "PORT")
         edit_item = next(i for i in port_item.get_children() if i.label == "Edit value")
-        with patch("colette_cli.tui.forms.ask", return_value="9090"):
+        with patch("colette_cli.tui.forms.ask", return_value="9090"), \
+             patch("colette_cli.utils.ssh.push_template_hooks"):
             edit_item.run()
         cfg = load_config()
         tmpl = next(t for t in cfg["machines"]["remote"]["templates"] if t["name"] == "dev")
@@ -1841,7 +1843,8 @@ class TestTemplateParamItemsMachineSpecific:
         save_config(cfg)
         items = template_param_items("dev", "remote")
         add_item = next(i for i in items if i.label == "Add parameter")
-        with patch("colette_cli.tui.forms.ask", side_effect=["HOST", "myhost"]):
+        with patch("colette_cli.tui.forms.ask", side_effect=["HOST", "myhost"]), \
+             patch("colette_cli.utils.ssh.push_template_hooks"):
             add_item.run()
         cfg = load_config()
         tmpl = next(t for t in cfg["machines"]["remote"]["templates"] if t["name"] == "dev")
